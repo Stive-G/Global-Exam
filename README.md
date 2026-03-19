@@ -12,10 +12,11 @@ Script JavaScript a coller dans la console du navigateur sur une page Global Exa
 ## Utilisation
 
 1. Ouvrir la page Global Exam.
-2. Ouvrir la console (`F12` ou `Ctrl+Shift+I`).
-3. Si le collage est bloque, taper `allow pasting`.
-4. Coller le contenu de `Script.js`.
-5. Valider avec `Entree`.
+2. Aller dans une activité
+3. Puis ouvrir la console (`F12` ou `Ctrl+Shift+I`).
+4. Si le collage est bloque, taper `allow pasting`.
+5. Coller le contenu de `Script.js`.
+6. Valider avec `Entree`.
 
 Le script demarre automatiquement.
 
