@@ -20,6 +20,32 @@ Script JavaScript a coller dans la console du navigateur sur une page Global Exa
 
 Le script demarre automatiquement.
 
+## Ollama avec Docker
+
+L'assistant IA local utilise Ollama sur :
+
+```text
+http://localhost:11434/api/chat
+```
+
+Demarrer Ollama et telecharger le modele par defaut :
+
+```powershell
+docker compose up -d
+```
+
+Verifier que le modele est disponible :
+
+```powershell
+docker compose exec ollama ollama list
+```
+
+Tester rapidement l'API :
+
+```powershell
+curl http://localhost:11434/api/chat -H "Content-Type: application/json" -d "{\"model\":\"qwen3:4b\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"Reponds uniquement: OK\"}]}"
+```
+
 ## Commandes
 
 - `geStart()` ou `gs()` : demarrer
