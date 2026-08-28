@@ -114,7 +114,12 @@
     // ne sont pas encore des questions. En revanche, un vrai champ/zone/choix reste
     // un signal fort même si le compteur est atypique.
     const questionLikely = !visibleCorrection && (strongControls || (progressed && questionHint));
-    const submitted = typeof hasSubmittedState === 'function' ? hasSubmittedState() : false;
+    // Ne pas appeler hasSubmittedState() ici : ce helper dépend lui-même de
+    // isRealFeedbackPage() après patch et provoquerait une récursion pageDomAudit ->
+    // hasSubmittedState -> isRealFeedbackPage -> pageDomAudit.
+    const submittedControl =
+      typeof findSubmittedStateControl === 'function' ? !!findSubmittedStateControl() : false;
+    const submitted = submittedControl || visibleCorrection;
     const fingerprint = pageFingerprint();
 
     return {
