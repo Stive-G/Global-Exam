@@ -6,6 +6,7 @@
   const expectedManualHotfix = "6.4-content-loop-manual-flow-v3";
   const expectedContextPatch = "6.4-context-v1";
   const expectedPageAudit = "6.4-page-audit-v2";
+  const expectedFinalizePatch = "6.4-finalize-v1";
 
   if (window.__globalExamPager) {
     const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
@@ -98,6 +99,7 @@
     manual: `http://localhost:3000/runtime-hotfix-v6.4-content-loop.js?v=${cacheBust}`,
     context: `http://localhost:3000/runtime-context-v6.4.js?v=${cacheBust}`,
     pageAudit: `http://localhost:3000/runtime-page-audit-v6.4.js?v=${cacheBust}`,
+    finalize: `http://localhost:3000/runtime-finalize-v6.4.js?v=${cacheBust}`,
   };
 
   const entries = Object.entries(urls);
@@ -109,12 +111,13 @@
   });
 
   const texts = await Promise.all(responses.map((response) => response.text()));
-  const [baseRaw, runtimeRaw, manualRaw, contextRaw, pageAuditRaw] = texts;
+  const [baseRaw, runtimeRaw, manualRaw, contextRaw, pageAuditRaw, finalizeRaw] = texts;
   const baseCode = normalize(baseRaw);
   const runtimeCode = normalize(runtimeRaw);
   const manualCode = normalize(manualRaw);
   const contextCode = normalize(contextRaw);
   const pageAuditCode = normalize(pageAuditRaw);
+  const finalizeCode = normalize(finalizeRaw);
 
   if (!baseCode.includes(`ASSISTANT_VERSION = "${baseVersion}"`)) {
     throw new Error(`[Loader Global Exam] Base v${baseVersion} attendue.`);
@@ -131,22 +134,28 @@
   if (!pageAuditCode.includes(`PAGE_AUDIT_VERSION = "${expectedPageAudit}"`)) {
     throw new Error(`[Loader Global Exam] Audit de page attendu: ${expectedPageAudit}.`);
   }
+  if (!finalizeCode.includes(`FINALIZE_PATCH_VERSION = "${expectedFinalizePatch}"`)) {
+    throw new Error(`[Loader Global Exam] Patch de finalisation attendu: ${expectedFinalizePatch}.`);
+  }
 
   (0, eval)(runtimeCode);
   (0, eval)(manualCode);
   (0, eval)(contextCode);
   (0, eval)(pageAuditCode);
+  (0, eval)(finalizeCode);
 
   if (typeof window.__applyGlobalExamV64Patch !== "function") throw new Error("Patch runtime non initialisé.");
   if (typeof window.__applyGlobalExamV64ContentLoopFix !== "function") throw new Error("Hotfix manuel non initialisé.");
   if (typeof window.__applyGlobalExamV64ContextPatch !== "function") throw new Error("Patch contexte non initialisé.");
   if (typeof window.__applyGlobalExamV64PageAuditPatch !== "function") throw new Error("Audit DOM non initialisé.");
+  if (typeof window.__applyGlobalExamV64FinalizePatch !== "function") throw new Error("Patch finalisation non initialisé.");
 
   let code = window.__applyGlobalExamV64Patch(baseCode);
   code = window.__applyGlobalExamV64ContentLoopFix(code);
   code = window.__applyGlobalExamV64ContextPatch(code);
   code = repairKnownGeneratedSyntax(code);
   code = window.__applyGlobalExamV64PageAuditPatch(code);
+  code = window.__applyGlobalExamV64FinalizePatch(code);
   assertSyntax(code);
   (0, eval)(code);
   installFeedbackSurveyGuard();
@@ -162,10 +171,11 @@
     manualFlow: expectedManualHotfix,
     context: expectedContextPatch,
     pageAudit: expectedPageAudit,
+    finalize: expectedFinalizePatch,
   });
 
   console.log(
     `[Loader Global Exam] Chargé : assistant v${loaded} | ${expectedManualHotfix} | ` +
-    `${expectedContextPatch} | ${expectedPageAudit}`
+    `${expectedContextPatch} | ${expectedPageAudit} | ${expectedFinalizePatch}`
   );
 })();
