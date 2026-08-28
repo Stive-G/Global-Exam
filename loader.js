@@ -173,6 +173,13 @@
     }
   };
 
+  // Les fichiers montés par Docker peuvent être convertis en CRLF par Git sous Windows.
+  // Les patchs runtime utilisent des blocs texte exacts en LF : sans normalisation,
+  // source.includes(...) échoue alors que le code est pourtant identique.
+  const normalizeSourceText = (source) => String(source || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n?/g, "\n");
+
   installFeedbackSurveyGuard();
 
   const cacheBust = `${expectedVersion}-${Date.now()}`;
@@ -188,12 +195,17 @@
   if (!manualHotfixResponse.ok) throw new Error(`Hotfix navigation manuelle HTTP ${manualHotfixResponse.status}`);
   if (!contextPatchResponse.ok) throw new Error(`Patch contexte activité HTTP ${contextPatchResponse.status}`);
 
-  const [baseCode, patchCode, manualHotfixCode, contextPatchCode] = await Promise.all([
+  const [baseCodeRaw, patchCode, manualHotfixCode, contextPatchCode] = await Promise.all([
     assistantResponse.text(),
     patchResponse.text(),
     manualHotfixResponse.text(),
     contextPatchResponse.text(),
   ]);
+
+  const baseCode = normalizeSourceText(baseCodeRaw);
+  if (baseCode !== baseCodeRaw) {
+    console.log("[Loader Global Exam] Fins de ligne Windows/BOM normalisées avant application des patchs.");
+  }
 
   if (!baseCode.includes(`ASSISTANT_VERSION = "${baseVersion}"`)) {
     throw new Error(
@@ -231,9 +243,22 @@
     throw new Error("[Loader Global Exam] Le patch contexte activité n'a pas été initialisé.");
   }
 
-  let code = window.__applyGlobalExamV64Patch(baseCode);
-  code = window.__applyGlobalExamV64ContentLoopFix(code);
-  code = window.__applyGlobalExamV64ContextPatch(code);
+  let code;
+  try {
+    code = window.__applyGlobalExamV64Patch(baseCode);
+    code = window.__applyGlobalExamV64ContentLoopFix(code);
+    code = window.__applyGlobalExamV64ContextPatch(code);
+  } catch (error) {
+    console.error("[Loader Global Exam] Échec d'application d'un patch runtime.", {
+      message: error?.message || String(error),
+      baseHasOrderingNoise: baseCode.includes("const isOrderingNoiseText = (text) =>"),
+      baseHasV64OrderingGuard: baseCode.includes("const looksLikeInternalTranslationKey = (text) =>"),
+      baseLength: baseCode.length,
+      lineEndingsNormalized: baseCode !== baseCodeRaw,
+    });
+    throw error;
+  }
+
   code = repairKnownGeneratedSyntax(code);
   assertGeneratedCodeSyntax(code);
   (0, eval)(code);
