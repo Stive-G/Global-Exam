@@ -1,28 +1,34 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: global-exam-ollama
+  ai-proxy:
+    image: node:22-alpine
+    container_name: global-exam-ai-proxy
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PORT: "3001"
+    volumes:
+      - type: bind
+        source: ./multi-ai-proxy.mjs
+        target: /app/multi-ai-proxy.mjs
+        read_only: true
+    command: ["node", "/app/multi-ai-proxy.mjs"]
+
+  cors-proxy:
+    image: nginx:alpine
+    container_name: global-exam-proxy
     restart: unless-stopped
     ports:
-      - "11434:11434"
-    environment:
-      OLLAMA_HOST: "0.0.0.0:11434"
-      OLLAMA_ORIGINS: "*"
-    volumes:
-      - ollama-data:/root/.ollama
-
-  ollama-pull-qwen3:
-    image: ollama/ollama:latest
-    container_name: global-exam-ollama-pull-qwen3
+      - "3000:80"
     depends_on:
-      - ollama
-    environment:
-      OLLAMA_HOST: "http://ollama:11434"
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "sleep 5 &&
-      ollama pull qwen3:4b"
-    restart: "no"
-
-volumes:
-  ollama-data:
+      - ai-proxy
+    volumes:
+      - type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+      - type: bind
+        source: ./global-exam-assistant-v6.3.js
+        target: /usr/share/nginx/html/assistant.js
+        read_only: true

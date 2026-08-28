@@ -1,9 +1,12 @@
 (() => {
+  const ASSISTANT_VERSION = "6.3";
   const existing = window.__globalExamPager;
   if (existing) {
-    console.warn("Global Exam Assistant est deja charge. Recharge la page avant de coller une nouvelle version.");
+    const loadedVersion = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
+    console.warn(`Global Exam Assistant ${loadedVersion} est déjà chargé. Recharge la page (Ctrl+R) avant de charger la v${ASSISTANT_VERSION}.`);
     return;
   }
+  window.__GLOBAL_EXAM_ASSISTANT_VERSION = ASSISTANT_VERSION;
 
   const state = {
     running: false,
@@ -23,13 +26,13 @@
       activityPacing: {
         enabled: true,
         minMinutes: 30,
-        maxMinutes: 40,
+        maxMinutes: 30,
       },
       agent: {
         enabled: true,
         endpoint: "http://localhost:3000/api/chat",
-        provider: "groq",
-        model: "qwen/qwen3.8-27b",
+        provider: "auto",
+        model: "auto",
         timeoutMs: 20000,
         autoAnswer: true,
         autoConfidenceThreshold: 0.55,
@@ -48,7 +51,7 @@
         adjudicationRepairAttempts: 2,
         adjudicationFallbackMinConfidence: 0.82,
         consensusConfidenceFloor: 0.82,
-        lowConfidenceMaxReanalyses: 2,
+        lowConfidenceMaxRéanalyses: 2,
         dragStrategyRounds: 2,
         dragRoundDelayMs: 420,
       },
@@ -73,6 +76,14 @@
       internalClick: false,
       manualNavigationTimer: null,
       manualNavigationListenerInstalled: false,
+      manualResumeToken: 0,
+      manualResumePending: false,
+      manualResumeLabel: null,
+      manualResumeAt: null,
+      panelCollapsed: false,
+      lastProvider: null,
+      lastModel: null,
+      providerHistory: [],
     },
     activity: {
       targetDurationMs: null,
@@ -92,7 +103,7 @@
     .toLowerCase();
 
   // Version plus permissive pour les textes d'interface : apostrophes droites/
-  // typographiques, ponctuation et accents ne doivent pas casser la detection.
+  // typographiques, ponctuation et accents ne doivent pas casser la détection.
   const normLoose = (s) => norm(s)
     .replace(/[’'`´]/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
@@ -179,7 +190,7 @@
     state.agent.blockReason = null;
     state.agent.applyAttempts.clear();
     state.agent.lowConfidenceRetries.clear();
-    if (!silent) log("Blocage securite leve.");
+    if (!silent) log("Blocage de sécurité levé.");
     return true;
   };
 
@@ -235,7 +246,7 @@
     .filter((el) => isVisible(el) && isEnabled(el) && !isAssistantElement(el));
 
   // Global Exam masque parfois le vrai <input radio/checkbox> et n'affiche que
-  // son label/wrapper. Un detecteur base uniquement sur isVisible(input) rate alors
+  // son label/wrapper. Un détecteur basé uniquement sur isVisible(input) rate alors
   // une vraie question. On cherche donc la surface visible associee au controle.
   const associatedChoiceSurface = (input) => {
     if (!input || isAssistantElement(input)) return null;
@@ -449,7 +460,7 @@
   };
 
 
-  // v5.2 — Identite stable de la page, independante du type detecte apres mutation DOM.
+  // v5.2 — Identité stable de la page, indépendante du type détecté après mutation DOM.
   // Exemple: un fill-in-the-blanks peut commencer en drag-drop puis, une fois rempli,
   // les mots poses ressemblent a des boutons. On ne doit pas le prendre pour une nouvelle question.
   const currentProgressMarker = () => {
@@ -504,8 +515,8 @@
     if (beforeSnap?.progress && afterSnap.progress) {
       return beforeSnap.progress !== afterSnap.progress;
     }
-    // Fallback si la progression n'est pas disponible: changement d'identite stable ET
-    // question non similaire. Un simple changement de type apres mutation ne suffit jamais.
+    // Fallback si la progression n'est pas disponible: changement d'identité stable ET
+    // question non similaire. Un simple changement de type après mutation ne suffit jamais.
     if (beforeSnap?.identity && afterSnap.identity && beforeSnap.identity !== afterSnap.identity) {
       if (beforeQ && afterQ && sameQuestion(beforeQ, afterQ)) return false;
       return true;
@@ -528,8 +539,8 @@
       body.includes(normLoose('fill in the blank with the following words'));
   };
 
-  // Detecte les exercices dont la reponse est DEJA presente dans le DOM.
-  // Cette detection passe avant les fallbacks button-choice afin d'eviter de "re-repondre".
+  // Détecte les exercices dont la réponse est DÉJÀ presente dans le DOM.
+  // Cette détection passe avant les fallbacks button-choice afin d'éviter de "re-repondre".
   const detectCompletedStructuredExercise = () => {
     const id = pageIdentity();
 
@@ -589,7 +600,7 @@
   ];
 
 
-  // v5.5 - Les controles du lecteur audio/video ne sont jamais des reponses.
+  // v5.5 - Les contrôles du lecteur audio/video ne sont jamais des réponses.
   const isExerciseUiNoiseText = (text) => {
     const t = normLoose(text);
     if (!t) return true;
@@ -650,7 +661,7 @@
     if (!allZonesEls.length) return null;
 
     // v5.2: dans les "Fill in the blanks with the following words", une zone qui
-    // contient deja un mot est TERMINEE. On ne la renvoie jamais a Groq et on ne
+    // contient déjà un mot est TERMINEE. On ne la renvoie jamais a Groq et on ne
     // tente jamais d'y deposer un autre mot.
     const indexedZones = allZonesEls.map((el, originalIndex) => ({ el, originalIndex }));
     const remainingZones = isFillWordsInstruction()
@@ -855,7 +866,7 @@
 
   // v5.3 - Etat dynamique d'un exercice d'ordering.
   // Le nombre de fragments n'est JAMAIS fixe (pas toujours 7). On compte ce qui est
-  // deja place dans la zone resultat et uniquement les fragments encore disponibles.
+  // déjà placé dans la zone résultat et uniquement les fragments encore disponibles.
   const orderingSelectionState = (root = document.body, instructionEl = null, target = null) => {
     const instruction = instructionEl?.isConnected ? instructionEl : findOrderingInstructionElement(root);
     const liveTarget = target?.isConnected ? target : findOrderingTarget(root, instruction);
@@ -924,21 +935,21 @@
       }
     }
 
-    // 0 fragment restant + zone deja remplie = exercice termine; detectCompletedStructuredExercise()
-    // le traitera avant ce detecteur. Ici il faut au moins un fragment restant.
+    // 0 fragment restant + zone déjà remplie = exercice termine; detectCompletedStructuredExercise()
+    // le traitera avant ce détecteur. Ici il faut au moins un fragment restant.
     if (items.length < 1) return null;
 
     const basePrompt = inferPrompt(searchRoot, items.map((i) => i.text));
     const prefix = orderState.selectedTexts.length
-      ? `Fragments deja places dans la zone (ne pas les reselectionner): ${orderState.selectedTexts.join(' | ')}`
-      : `Fragments deja places: ${orderState.selectedCount}`;
+      ? `Fragments déjà placés dans la zone (ne pas les resélectionner): ${orderState.selectedTexts.join(' | ')}`
+      : `Fragments déjà placés: ${orderState.selectedCount}`;
     const dynamicPrompt = [
       basePrompt,
       prefix,
-      `Nombre de fragments RESTANTS a selectionner maintenant: ${items.length}.`,
+      `Nombre de fragments RESTANTS à sélectionner maintenant: ${items.length}.`,
       `Tu dois retourner une permutation contenant exactement ${items.length} index, chacun une seule fois, parmi 0..${Math.max(0, items.length - 1)}.`,
       `Il n'y a AUCUN nombre fixe de fragments: utilise seulement les ${items.length} propositions actuellement disponibles.`,
-      `IMPORTANT PONCTUATION: si une proposition est exactement "?", elle fait partie de la reponse et doit etre placee en DERNIERE position pour former la question.`
+      `IMPORTANT PONCTUATION: si une proposition est exactement "?", elle fait partie de la réponse et doit être placée en DERNIÈRE position pour former la question.`
     ].join("\n");
 
     return {
@@ -1079,7 +1090,7 @@
         if (t.length < 2 || t.length > 500) return false;
         if (isExerciseUiNoiseText(text)) return false;
         if (excluded.some((e) => t === e || t.startsWith(`${e} `))) return false;
-        // Evite les grands conteneurs qui englobent plusieurs reponses.
+        // Evite les grands conteneurs qui englobent plusieurs réponses.
         const childCandidates = el.querySelectorAll?.("label,[class*='answer'],[class*='choice'],[class*='option'],[class*='response']")?.length || 0;
         if (childCandidates > 2) return false;
         return true;
@@ -1093,21 +1104,35 @@
     }
 
     const candidates = [...byText.values()].filter((c) => {
-      // Le wrapper doit au minimum ressembler a une vraie surface de reponse.
+      // Le wrapper doit au minimum ressembler a une vraie surface de réponse.
       const cursor = getComputedStyle(c.el).cursor;
       return c.el.tagName === "LABEL" || c.el.tabIndex >= 0 || cursor === "pointer" ||
         /answer|choice|option|response|radio/i.test(String(c.el.className || ""));
     });
 
-    if (candidates.length < 2 || candidates.length > 10) return null;
+    const allowSingleFillChoice = candidates.length === 1 && isSingleChoiceFillContext(root);
+    if ((!allowSingleFillChoice && candidates.length < 2) || candidates.length > 10) return null;
     const choices = candidates.map((c, index) => ({ index, text: c.text, element: c.el, input: c.el }));
     const prompt = inferPrompt(root, choices.map((c) => c.text));
     if (norm(prompt).length < 8) return null;
     return { type: "button-choice", root, choices, prompt };
   };
 
+  const isSingleChoiceFillContext = (root = document.body) => {
+    const instruction = bodyInstruction();
+    const fillLike =
+      instruction.includes(normLoose("fill in the blank")) ||
+      instruction.includes(normLoose("complete the sentence")) ||
+      instruction.includes(normLoose("complete the phrase"));
+    if (!fillLike) return false;
+
+    const zones = getLiveZoneElements(root === document.body ? document.body : root);
+    const bodyZones = zones.length ? zones : getLiveZoneElements(document.body);
+    return bodyZones.length === 1 && bodyZones.filter((z) => !isZoneFilled(z)).length === 1;
+  };
+
   const detectButtonChoice = (root) => {
-    // Fallback uniquement pour de VRAIS controles interactifs. Les anciennes
+    // Fallback uniquement pour de VRAIS contrôles interactifs. Les anciennes
     // classes .choice/.option/.answer pouvaient correspondre au rendu des
     // corrections et etaient alors prises a tort pour une nouvelle question.
     const excluded = [...state.config.nextTexts, ...state.config.validateTexts, ...state.config.passTexts].map(norm);
@@ -1135,9 +1160,10 @@
       const k = norm(c.text);
       if (!seen.has(k)) { seen.add(k); uniq.push(c); }
     }
-    if (uniq.length < 2 || uniq.length > 12) return null;
+    const allowSingleFillChoice = uniq.length === 1 && isSingleChoiceFillContext(root);
+    if ((!allowSingleFillChoice && uniq.length < 2) || uniq.length > 12) return null;
 
-    // Ne jamais utiliser ce fallback sur une page de correction/resultat.
+    // Ne jamais utiliser ce fallback sur une page de correction/résultat.
     if (isFeedbackPage()) return null;
 
     const choices = uniq.map((x, index) => ({ index, ...x }));
@@ -1188,7 +1214,7 @@
 
     // Même protection pour les exercices explicitement drag/drop / matching par clic.
     // Une consigne comme "Match the words with their meanings" ne doit JAMAIS tomber
-    // dans button-choice (sinon le lecteur audio peut etre pris pour une reponse).
+    // dans button-choice (sinon le lecteur audio peut etre pris pour une réponse).
     if (hasAnyInstruction(dragInstructionMarkers)) {
       try {
         const q = detectDragDrop(document.body);
@@ -1270,7 +1296,7 @@
   const extractJsonObject = (text) => {
     try { return JSON.parse(text); } catch {}
     const match = String(text || "").match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("JSON introuvable dans la reponse du modele.");
+    if (!match) throw new Error("JSON introuvable dans la réponse du modèle.");
     return JSON.parse(match[0]);
   };
 
@@ -1278,7 +1304,7 @@
     if (q.type === "drag-drop") {
       return [
         "Resous cet exercice de drag and drop.",
-        "Associe exactement une reponse a chaque zone.",
+        "Associe exactement une réponse à chaque zone.",
         "Une zone ne doit apparaitre qu'une fois et un item ne doit pas etre reutilise.",
         "Utilise uniquement les index fournis.",
         "Reponds uniquement selon le schema JSON impose par le serveur.",
@@ -1304,9 +1330,9 @@
     const formats = {
       "single-choice": 'Format: {"choice":1,"confidence":0.92,"explanation":"courte"}',
       "button-choice": 'Format: {"choice":1,"confidence":0.92,"explanation":"courte"}',
-      "multi-choice": 'Format: {"choices":[0,2],"confidence":0.92,"explanation":"courte"}. IMPORTANT: choices doit contenir TOUS les index corrects, aucun texte. Pour une question "une ou plusieurs reponses", verifie chaque option individuellement.',
-      "text": 'Format: {"answers":[{"field":0,"text":"reponse"}],"confidence":0.92,"explanation":"courte"}',
-      "multi-text": 'Format: {"answers":[{"field":0,"text":"reponse 1"},{"field":1,"text":"reponse 2"}],"confidence":0.92,"explanation":"courte"}',
+      "multi-choice": 'Format: {"choices":[0,2],"confidence":0.92,"explanation":"courte"}. IMPORTANT: choices doit contenir TOUS les index corrects, aucun texte. Pour une question "une ou plusieurs réponses", vérifie chaque option individuellement.',
+      "text": 'Format: {"answers":[{"field":0,"text":"réponse"}],"confidence":0.92,"explanation":"courte"}',
+      "multi-text": 'Format: {"answers":[{"field":0,"text":"réponse 1"},{"field":1,"text":"réponse 2"}],"confidence":0.92,"explanation":"courte"}',
       "select": 'Format: {"selections":[{"field":0,"option":2}],"confidence":0.92,"explanation":"courte"}',
       "multi-select": 'Format: {"selections":[{"field":0,"option":2},{"field":1,"option":1}],"confidence":0.92,"explanation":"courte"}',
       "ordering": 'Format: {"order":[2,0,1],"confidence":0.92,"explanation":"courte"}',
@@ -1314,31 +1340,36 @@
       "matrix": 'Format: {"rows":[{"row":0,"choice":1},{"row":1,"choice":0}],"confidence":0.92,"explanation":"courte"}',
     };
 
-    return [...common, formats[q.type] || 'Format: {"confidence":0.5,"explanation":"type non gere"}', "", serialized].join("\n");
+    return [...common, formats[q.type] || 'Format: {"confidence":0.5,"explanation":"type non géré"}', "", serialized].join("\n");
   };
 
-  const askGroqAgent = async (q, verificationNote = "") => {
-    if (!state.config.agent.enabled) throw new Error("Assistant IA desactive.");
+  const askAiAgent = async (q, verificationNote = "", providerSlot = 0) => {
+    if (!state.config.agent.enabled) throw new Error("Assistant IA désactivé.");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), state.config.agent.timeoutMs);
-    const prompt = verificationNote ? `${promptForQuestion(q)}\n\n${verificationNote}` : promptForQuestion(q);
+    const prompt = verificationNote ? `${promptForQuestion(q)}
+
+${verificationNote}` : promptForQuestion(q);
     let lastError = null;
 
     try {
       for (let attempt = 0; attempt <= state.config.agent.maxRetries; attempt++) {
         try {
-          console.log(`[Groq] Envoi requete ${q.type} a ${state.config.agent.endpoint} (tentative ${attempt + 1})...`);
+          const requestedProvider = state.config.agent.provider || "auto";
+          console.log(`[Multi-IA] Envoi ${q.type} via ${requestedProvider} (slot ${providerSlot}, tentative ${attempt + 1})...`);
           const response = await fetch(state.config.agent.endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: controller.signal,
             body: JSON.stringify({
               question_type: q.type,
-              model: state.config.agent.model,
+              provider: requestedProvider,
+              provider_slot: Number(providerSlot) || 0,
+              model: state.config.agent.model && state.config.agent.model !== "auto" ? state.config.agent.model : undefined,
               messages: [
                 {
                   role: "system",
-                  content: "Tu es un moteur de resolution d'exercices. Analyse correctement la question et respecte strictement le schema JSON impose par le serveur."
+                  content: "Tu es un moteur de résolution d'exercices. Analyse correctement la question et respecte strictement le schéma JSON imposé par le serveur."
                 },
                 { role: "user", content: prompt }
               ],
@@ -1355,13 +1386,19 @@
 
           const payload = await response.json();
           const content = payload?.choices?.[0]?.message?.content;
-          if (!content) throw new Error("Reponse Groq vide ou inattendue.");
+          if (!content) throw new Error("Réponse IA vide ou inattendue.");
 
           const result = extractJsonObject(content);
           result.confidence = Number.isFinite(Number(result.confidence))
             ? Math.max(0, Math.min(1, Number(result.confidence)))
             : 0.5;
           result.explanation = String(result.explanation || "").trim();
+          result.provider = String(payload?.provider || "inconnu");
+          result.modelUsed = String(payload?.model || "inconnu");
+          result.providers = [result.provider];
+          state.agent.lastProvider = result.provider;
+          state.agent.lastModel = result.modelUsed;
+          state.agent.providerHistory = [...state.agent.providerHistory, result.provider].slice(-8);
           return result;
         } catch (error) {
           if (error?.name === "AbortError") throw error;
@@ -1369,21 +1406,20 @@
           const status = Number(error?.httpStatus || 0);
           const retryable = error instanceof TypeError || status === 408 || status === 409 || status === 429 || status >= 500;
           if (!retryable || attempt >= state.config.agent.maxRetries) throw error;
-          agentLog(`Groq temporairement indisponible (${status || "reseau"}), nouvel essai...`);
+          agentLog(`Fournisseur IA temporairement indisponible (${status || "réseau"}), nouvel essai...`);
           await wait(state.config.agent.retryDelayMs * (attempt + 1));
         }
       }
-      throw lastError || new Error("Echec Groq inconnu.");
+      throw lastError || new Error("Échec IA inconnu.");
     } catch (error) {
       if (error?.name === "AbortError") {
-        throw new Error(`Timeout Groq apres ${state.config.agent.timeoutMs / 1000}s avec ${state.config.agent.model}.`);
+        throw new Error(`Timeout IA après ${state.config.agent.timeoutMs / 1000}s.`);
       }
       throw error;
     } finally {
       clearTimeout(timer);
     }
   };
-
   const clearHighlights = () => {
     for (const h of state.agent.highlights) {
       try {
@@ -1396,7 +1432,7 @@
     document.querySelectorAll(".global-exam-assistant-badge").forEach((n) => n.remove());
   };
 
-  const highlight = (el, label = "Reponse recommandee") => {
+  const highlight = (el, label = "Réponse recommandée") => {
     if (!el) return;
     state.agent.highlights.push({ el, outline: el.style.outline, outlineOffset: el.style.outlineOffset, backgroundColor: el.style.backgroundColor });
     el.style.outline = "3px solid #f59e0b";
@@ -1909,8 +1945,8 @@
       }
       await wait(22);
     }
-    // Rester un court instant dans la zone avant de relacher: certaines libs ne marquent
-    // la droppable active qu'apres un move/hover dans la cible.
+    // Rester un court instant dans la zone avant de relâcher: certaines libs ne marquent
+    // la droppable active qu'après un move/hover dans la cible.
     for (let i=0;i<4;i++) {
       for (const receiver of [target, document, window]) {
         dispatchPointerTyped(receiver,"pointermove",tx,ty,{buttons:1,pointerId:pid,pointerType,pressure:0.5});
@@ -1999,7 +2035,7 @@
         let liveTarget = reacquireDragTarget(target, targetRectHint);
         if (!liveSource || !liveTarget) return false;
 
-        // Ne pas recentrer agressivement deux elements deja visibles: sur les modales scrollables,
+        // Ne pas recentrer agressivement deux éléments déjà visibles: sur les modales scrollables,
         // deux scrollIntoView(center) consecutifs pouvaient sortir la source de l'ecran.
         liveSource.scrollIntoView?.({block:"nearest",inline:"nearest"});
         liveTarget.scrollIntoView?.({block:"nearest",inline:"nearest"});
@@ -2026,7 +2062,7 @@
                   await strategy(sourceEl, targetEl);
                   await wait(420);
                   if (await verifyPersistentDragChange(before, sourceEl, targetEl, expectedText)) {
-                    log(`Placement confirme (${name})${label ? ` : ${label}` : ""}.`);
+                    log(`Placement confirmé (${name})${label ? ` : ${label}` : ""}.`);
                     return true;
                   }
                 } catch (e) {
@@ -2054,7 +2090,7 @@
                 await strategy(sourceEl, targetEl);
                 await wait(460);
                 if (await verifyPersistentDragChange(before, sourceEl, targetEl, expectedText)) {
-                  log(`Placement confirme (${name})${label ? ` : ${label}` : ""}.`);
+                  log(`Placement confirmé (${name})${label ? ` : ${label}` : ""}.`);
                   return true;
                 }
               } catch (e) {
@@ -2066,11 +2102,11 @@
           }
         }
         if (round < rounds) {
-          log(`DnD non confirme au round ${round}; nouvelle tentative avec DOM rafraichi.`);
+          log(`DnD non confirmé au round ${round}; nouvelle tentative avec DOM rafraichi.`);
           await wait(state.config.agent.dragRoundDelayMs || 420);
         }
       }
-      log(`DnD non confirme apres tous les rounds${label ? ` (${label})` : ""}.`);
+      log(`DnD non confirmé apres tous les rounds${label ? ` (${label})` : ""}.`);
       return false;
     } finally {
       if (panel) panel.style.pointerEvents = oldPointerEvents || "";
@@ -2246,12 +2282,55 @@
 
   // v5.1 - Ordering Global Exam = selection par clic, pas drag.
   // Le vrai handler peut etre sur le texte, le bouton ou un wrapper parent. On essaie
-  // plusieurs surfaces et on exige une modification persistante de la zone de resultat.
+  // plusieurs surfaces et on exige une modification persistante de la zone de résultat.
   const orderingTargetLive = (q) => {
     if (q.orderTarget?.isConnected && isVisible(q.orderTarget)) return q.orderTarget;
     const root = q.root?.isConnected ? q.root : document.body;
     const instruction = findOrderingInstructionElement(root) || findOrderingInstructionElement(document.body);
     return findOrderingTarget(root, instruction) || findOrderingTarget(document.body, instruction) || null;
+  };
+
+  const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const countFragmentOccurrences = (containerText, fragmentText) => {
+    const rawFragment = String(fragmentText || "").trim();
+    if (!rawFragment) return 0;
+    const container = norm(containerText);
+    const fragment = norm(rawFragment);
+    if (!fragment) {
+      // Ponctuation seule, par exemple "?".
+      return (String(containerText || "").match(new RegExp(escapeRegExp(rawFragment), "g")) || []).length;
+    }
+    const pattern = new RegExp(`(^|\\s)${escapeRegExp(fragment).replace(/\\ /g, "\\s+")}(?=\\s|$)`, "g");
+    return (container.match(pattern) || []).length;
+  };
+
+  const findFragmentAfter = (containerText, fragmentText, startIndex = 0) => {
+    const raw = String(fragmentText || "").trim();
+    const text = norm(containerText);
+    const fragment = norm(raw);
+    if (!fragment) return String(containerText || "").indexOf(raw, startIndex);
+    const pattern = new RegExp(`(^|\\s)${escapeRegExp(fragment).replace(/\\ /g, "\\s+")}(?=\\s|$)`, "g");
+    pattern.lastIndex = Math.max(0, startIndex);
+    const match = pattern.exec(text);
+    return match ? match.index + (match[1]?.length || 0) : -1;
+  };
+
+  const invokeReactClickDirect = async (el, label = "") => {
+    const handler = findReactHandler(el, ["onClick", "onPointerUp", "onMouseUp"]);
+    if (!handler) return false;
+    state.agent.internalClick = true;
+    try {
+      handler.fn(makeDirectHandlerEvent(handler.owner, label || textOf(el)));
+      state.clicks += 1;
+      await wait(220);
+      return true;
+    } catch (error) {
+      console.warn("[Global Exam Assistant] Clic React direct en erreur:", error);
+      return false;
+    } finally {
+      setTimeout(() => { state.agent.internalClick = false; }, 0);
+    }
   };
 
   const orderingClickSnapshot = (q, originalText) => {
@@ -2261,6 +2340,7 @@
       target,
       targetText: target ? textOf(target) : "",
       targetHtml: target ? target.innerHTML : "",
+      fragmentCount: target ? countFragmentOccurrences(textOf(target), originalText) : 0,
       live,
       liveParent: live?.parentElement || null,
       liveConnected: !!live?.isConnected,
@@ -2270,11 +2350,11 @@
   const orderingClickConfirmed = (q, before, originalText) => {
     const target = orderingTargetLive(q);
     if (!target) return false;
-    const changedTarget = textOf(target) !== before.targetText || target.innerHTML !== before.targetHtml;
-    if (changedTarget) return true;
-    const wanted = norm(originalText);
-    const targetHas = wanted && norm(textOf(target)).includes(wanted);
-    if (targetHas) return true;
+    const afterText = textOf(target);
+    const changedTarget = afterText !== before.targetText || target.innerHTML !== before.targetHtml;
+    const occurrenceIncreased = countFragmentOccurrences(afterText, originalText) > Number(before.fragmentCount || 0);
+    if (changedTarget && occurrenceIncreased) return true;
+
     const live = resolveLiveOrderingItem(q, originalText);
     if (before.liveConnected && (!before.live?.isConnected || !live)) return true;
     if (live && before.liveParent && live.parentElement !== before.liveParent) return true;
@@ -2291,7 +2371,7 @@
       candidates.push(el);
     };
     add(live);
-    // sourceVariants connait deja les wrappers/activators utiles des composants React.
+    // sourceVariants connait déjà les wrappers/activators utiles des composants React.
     for (const el of sourceVariants(live, original.text)) add(el);
     add(live.closest?.("button,[role='button'],[role='option'],[tabindex],li,[class*='word'],[class*='chip'],[class*='token'],[class*='item'],[class*='option']"));
     add(live.parentElement);
@@ -2325,13 +2405,136 @@
       } catch {}
       await wait(320);
       if (orderingClickConfirmed(q, before, original.text)) return true;
+
+      // 3. Dernier recours: appeler directement le handler React du composant.
+      const direct = resolveLiveOrderingItem(q, original.text) || fresh;
+      if (direct?.isConnected && await invokeReactClickDirect(direct, original.text)) {
+        await wait(320);
+        if (orderingClickConfirmed(q, before, original.text)) return true;
+      }
     }
     return false;
   };
 
 
+  const orderingSelectedElements = (target) => {
+    if (!target?.isConnected) return [];
+    const tr = target.getBoundingClientRect();
+    const items = deepestUniqueElements(
+      [...document.querySelectorAll(orderingCandidateSelector)]
+        .filter((el) => isVisible(el) && !isAssistantElement(el) && looksInteractiveChip(el))
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          return target.contains(el) || (cx >= tr.left - 14 && cx <= tr.right + 14 && cy >= tr.top - 14 && cy <= tr.bottom + 14);
+        })
+        .filter((el) => {
+          const t = textOf(el).trim();
+          return !!t && !/^\d+$/.test(t) && !isOrderingNoiseText(t);
+        })
+    );
+    items.sort((a,b) => {
+      const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect();
+      return ar.top-br.top || ar.left-br.left;
+    });
+    return items;
+  };
+
+  const localOrderingUndoCandidates = (q, target) => {
+    const tr = target?.getBoundingClientRect?.();
+    const root = q?.root?.isConnected ? q.root : document.body;
+    const pool = [...new Set([
+      ...root.querySelectorAll("button,[role='button'],[aria-label],[title]"),
+      ...(root !== document.body ? document.querySelectorAll("button,[role='button'],[aria-label],[title]") : [])
+    ])];
+    return pool.filter((el) => {
+      if (!el?.isConnected || !isVisible(el) || !isEnabled(el) || isAssistantElement(el)) return false;
+      const label = normLoose(`${controlText(el)} ${el.getAttribute?.("aria-label") || ""} ${el.getAttribute?.("title") || ""}`);
+      if (matchesActionText(controlText(el), state.config.nextTexts) || matchesActionText(controlText(el), state.config.validateTexts) || matchesActionText(controlText(el), state.config.passTexts)) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width > 90 || r.height > 90 || r.width < 12 || r.height < 12) return false;
+      if (tr) {
+        const dx = Math.max(tr.left-r.right, r.left-tr.right, 0);
+        const dy = Math.max(tr.top-r.bottom, r.top-tr.bottom, 0);
+        if (Math.hypot(dx,dy) > 360) return false;
+      }
+      const iconOnly = !controlText(el).trim() && !!el.querySelector?.("svg,path,i");
+      const explicitUndo = /undo|annul|retour|back|remove|reset|precedent|précédent|revenir/.test(label);
+      const localIcon = iconOnly && !!tr && r.top >= tr.bottom - 45 && r.top <= tr.bottom + 260;
+      return explicitUndo || localIcon;
+    }).sort((a,b) => {
+      const score = (el) => {
+        const label = normLoose(`${controlText(el)} ${el.getAttribute?.("aria-label") || ""} ${el.getAttribute?.("title") || ""}`);
+        let v = /undo|annul|remove|reset|revenir/.test(label) ? -1000 : /retour|back/.test(label) ? -500 : 0;
+        if (tr) {
+          const r=el.getBoundingClientRect();
+          const dx=Math.max(tr.left-r.right,r.left-tr.right,0), dy=Math.max(tr.top-r.bottom,r.top-tr.bottom,0);
+          v += Math.hypot(dx,dy);
+        }
+        return v;
+      };
+      return score(a)-score(b);
+    });
+  };
+
+  const resetOrderingSelection = async (q) => {
+    let instruction = findOrderingInstructionElement(document.body);
+    let target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);
+    let st = orderingSelectionState(document.body, instruction, target);
+    if (st.selectedCount <= 0) return true;
+
+    log(`Ordering partiel détecté (${st.selectedCount} fragment(s) placé(s)). Remise à zéro avant une nouvelle analyse.`);
+    const maxSteps = Math.max(4, st.totalCount + 3);
+
+    for (let step = 0; step < maxSteps; step++) {
+      instruction = findOrderingInstructionElement(document.body);
+      target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);
+      const before = orderingSelectionState(document.body, instruction, target);
+      if (before.selectedCount <= 0) return true;
+
+      let changed = false;
+      for (const undo of localOrderingUndoCandidates(q, target).slice(0, 5)) {
+        const selectedBefore = before.selectedCount, remainingBefore = before.remainingCount;
+        await clickElement(undo);
+        await wait(260);
+        const after = orderingSelectionState(document.body, instruction, orderingTargetLive(q) || target);
+        if (after.selectedCount < selectedBefore || after.remainingCount > remainingBefore) {
+          changed = true;
+          break;
+        }
+      }
+
+      if (!changed) {
+        // Fallback: beaucoup de composants permettent de cliquer le dernier fragment
+        // placé pour le renvoyer dans la banque.
+        const selected = orderingSelectedElements(target);
+        const last = selected[selected.length - 1];
+        if (last) {
+          const selectedBefore = before.selectedCount, remainingBefore = before.remainingCount;
+          await clickElement(last);
+          await wait(260);
+          let after = orderingSelectionState(document.body, instruction, orderingTargetLive(q) || target);
+          if (!(after.selectedCount < selectedBefore || after.remainingCount > remainingBefore)) {
+            await invokeReactClickDirect(last, textOf(last));
+            await wait(260);
+            after = orderingSelectionState(document.body, instruction, orderingTargetLive(q) || target);
+          }
+          changed = after.selectedCount < selectedBefore || after.remainingCount > remainingBefore;
+        }
+      }
+
+      if (!changed) {
+        log("Impossible de remettre l'ordering à zéro de façon confirmée; validation bloquée.");
+        return false;
+      }
+    }
+
+    st = orderingSelectionState(document.body, findOrderingInstructionElement(document.body), orderingTargetLive(q));
+    return st.selectedCount <= 0;
+  };
+
   // v5.4 - Global Exam effectue lui-meme le "drop" quand on clique sur un mot.
-  // On verifie donc un vrai changement du DOM apres chaque clic, sans simuler de drag.
+  // On verifie donc un vrai changement du DOM après chaque clic, sans simuler de drag.
   const clickAutoDropSnapshot = (q, placement, expectedText) => {
     const root = findQuestionRoot();
     const descriptor = q.zones?.[Number(placement.zone)] || null;
@@ -2367,7 +2570,7 @@
       return { ok: true, reason: 'ancienne-zone-remplie', after };
     }
 
-    // Certaines zones sont recreees/disparaissent apres remplissage: dans ce cas on exige
+    // Certaines zones sont recréées/disparaissent après remplissage: dans ce cas on exige
     // deux preuves simultanees, pas seulement la disparition de la source.
     const sourceGone = before.sourcePresent && !after.sourcePresent;
     const oneLessEmpty = after.emptyCount < before.emptyCount;
@@ -2446,6 +2649,200 @@
     return false;
   };
 
+
+  // v6.3 — Application robuste des "button-choice", notamment les exercices
+  // "Fill in the blank with a phrase..." où cliquer une puce remplit directement le trou.
+  const buttonChoiceTextWithoutAssistant = (el) => {
+    if (!el) return "";
+    try {
+      const clone = el.cloneNode(true);
+      clone.querySelectorAll?.(".global-exam-assistant-badge,#global-exam-assistant").forEach((n) => n.remove());
+      return (clone.innerText || clone.textContent || "").replace(/\s+/g, " ").trim();
+    } catch {
+      return String(textOf(el) || "").replace(/\s+/g, " ").trim();
+    }
+  };
+
+  const buttonChoiceExactText = (el, expectedText) => {
+    const a = normLoose(buttonChoiceTextWithoutAssistant(el));
+    const b = normLoose(expectedText);
+    return !!a && !!b && a === b;
+  };
+
+  const buttonChoiceLiveCandidates = (q, expectedText) => {
+    const root = q?.root?.isConnected ? q.root : findQuestionRoot();
+    const selectors = [
+      "button", "[role='button']", "[role='option']", "label",
+      "[tabindex]", "[class*='answer']", "[class*='choice']",
+      "[class*='option']", "[class*='response']", "[class*='word']",
+      "[class*='chip']", "[class*='token']", "[class*='item']"
+    ].join(",");
+
+    const seen = new Set();
+    const candidates = [];
+
+    const add = (el) => {
+      if (!el || seen.has(el) || !el.isConnected || !isVisible(el) || !isEnabled(el) || isAssistantElement(el)) return;
+      if (!buttonChoiceExactText(el, expectedText)) return;
+      const r = el.getBoundingClientRect?.();
+      if (!r || r.width <= 0 || r.height <= 0) return;
+      if (r.width > Math.max(760, window.innerWidth * 0.95) || r.height > 260) return;
+      seen.add(el);
+      candidates.push(el);
+    };
+
+    try { [...root.querySelectorAll(selectors)].forEach(add); } catch {}
+    if (root !== document.body) {
+      try { [...document.querySelectorAll(selectors)].forEach(add); } catch {}
+    }
+
+    // Si q.choices possède encore une référence utilisable, la prioriser aussi.
+    for (const c of q?.choices || []) {
+      if (normLoose(c?.text) !== normLoose(expectedText)) continue;
+      add(c.element);
+
+      let cur = c.element;
+      for (let depth = 0; cur && depth < 4; depth++, cur = cur.parentElement) {
+        add(cur);
+      }
+
+      add(c.element?.closest?.("button,[role='button'],[role='option'],label,[tabindex],[class*='choice'],[class*='option'],[class*='answer'],[class*='response'],[class*='word'],[class*='chip'],[class*='token']"));
+      try { [...(c.element?.querySelectorAll?.("button,[role='button'],[role='option'],[tabindex]") || [])].forEach(add); } catch {}
+
+      // Réutiliser la logique déjà robuste des composants React/DnD pour retrouver
+      // un wrapper qui porte réellement onClick/onPointerUp.
+      try { sourceVariants(c.element, expectedText).forEach(add); } catch {}
+    }
+
+    // Les plus petites surfaces interactives sont souvent les vraies puces React.
+    candidates.sort((a, b) => {
+      const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+      const aPriority = a.matches("button,[role='button'],[role='option']") ? 0 : a.tabIndex >= 0 ? 1 : 2;
+      const bPriority = b.matches("button,[role='button'],[role='option']") ? 0 : b.tabIndex >= 0 ? 1 : 2;
+      return aPriority - bPriority || (ar.width * ar.height) - (br.width * br.height);
+    });
+
+    return candidates;
+  };
+
+  const buttonChoiceSnapshot = (q, expectedText) => {
+    const zones = getLiveZoneElements(document.body);
+    const emptyCount = zones.filter((z) => !isZoneFilled(z)).length;
+    const expectedInZone = zones.some((z) => isZoneFilled(z) && (
+      normLoose(zoneDirectText(z)) === normLoose(expectedText) ||
+      normLoose(zoneDirectText(z)).includes(normLoose(expectedText))
+    ));
+
+    const live = buttonChoiceLiveCandidates(q, expectedText);
+    const selected = live.some((el) => {
+      if (isControlSelected(el)) return true;
+      const aria = ["aria-selected", "aria-pressed", "aria-checked"].map((a) => el.getAttribute?.(a)).filter(Boolean);
+      return aria.some((v) => String(v).toLowerCase() === "true");
+    });
+
+    const root = q?.root?.isConnected ? q.root : findQuestionRoot();
+    return {
+      zones,
+      emptyCount,
+      expectedInZone,
+      candidateCount: live.length,
+      selected,
+      rootHtml: root?.innerHTML || "",
+      progress: currentProgressMarker(),
+    };
+  };
+
+  const buttonChoiceConfirmed = async (q, expectedText, before) => {
+    await wait(260);
+    const after = buttonChoiceSnapshot(q, expectedText);
+
+    // Cas principal des "Fill in the blank": la réponse est maintenant dans le trou.
+    if (after.expectedInZone) return { ok: true, reason: "réponse-dans-le-trou", after };
+
+    // Certains composants retirent/remplacent le trou après le clic.
+    if (after.emptyCount < before.emptyCount) return { ok: true, reason: "un-trou-rempli", after };
+
+    // QCM visuel classique : état sélectionné/pressed/checked.
+    if (!before.selected && after.selected) return { ok: true, reason: "état-sélectionné", after };
+
+    // La puce peut disparaître de la banque après avoir été consommée.
+    if (before.candidateCount > 0 && after.candidateCount < before.candidateCount && after.rootHtml !== before.rootHtml) {
+      return { ok: true, reason: "puce-consommée+DOM-modifié", after };
+    }
+
+    // Un rendu React peut recréer tout le bloc sans conserver les classes/ARIA.
+    if (after.rootHtml !== before.rootHtml && after.emptyCount <= before.emptyCount) {
+      // Accepter uniquement si la page ressemble à un fill-blank à zone unique ou
+      // si la réponse exacte n'est plus disponible comme choix.
+      const fillInstruction = bodyInstruction().includes(normLoose("fill in the blank")) ||
+        bodyInstruction().includes(normLoose("complete the"));
+      if (fillInstruction && (after.emptyCount < before.emptyCount || after.candidateCount < before.candidateCount)) {
+        return { ok: true, reason: "fill-blank-React-modifié", after };
+      }
+    }
+
+    return { ok: false, reason: "aucune-preuve-DOM", after };
+  };
+
+  const clickButtonChoiceRobust = async (q, originalChoice) => {
+    const expectedText = String(originalChoice?.text || "").trim();
+    if (!expectedText) return false;
+
+    const before = buttonChoiceSnapshot(q, expectedText);
+    let candidates = buttonChoiceLiveCandidates(q, expectedText);
+
+    // Dernier recours: ancienne référence si elle est toujours visible.
+    if (!candidates.length && originalChoice?.element?.isConnected) candidates = [originalChoice.element];
+
+    for (const candidate0 of candidates.slice(0, 6)) {
+      let candidate = candidate0?.isConnected ? candidate0 : buttonChoiceLiveCandidates(q, expectedText)[0];
+      if (!candidate) continue;
+
+      log(`Button-choice : clic sur "${expectedText}".`);
+      await clickElement(candidate);
+      let check = await buttonChoiceConfirmed(q, expectedText, before);
+      if (check.ok) {
+        log(`Button-choice confirmé (${check.reason}) : "${expectedText}".`);
+        return true;
+      }
+
+      // Fallback pointer/mouse sans drag.
+      const fresh = buttonChoiceLiveCandidates(q, expectedText)[0];
+      if (fresh) {
+        const r = fresh.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        try {
+          dispatchPointer(fresh, "pointerdown", x, y, 1);
+          dispatchMouse(fresh, "mousedown", x, y, 1);
+          await wait(55);
+          dispatchPointer(fresh, "pointerup", x, y, 0);
+          dispatchMouse(fresh, "mouseup", x, y, 0);
+          fresh.dispatchEvent(new MouseEvent("click", {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            clientX: x, clientY: y, button: 0, buttons: 0,
+          }));
+        } catch {}
+
+        check = await buttonChoiceConfirmed(q, expectedText, before);
+        if (check.ok) {
+          log(`Button-choice confirmé (${check.reason}, pointer) : "${expectedText}".`);
+          return true;
+        }
+
+        // Dernier recours : appeler directement le handler React du composant.
+        if (await invokeReactClickDirect(fresh, expectedText)) {
+          check = await buttonChoiceConfirmed(q, expectedText, before);
+          if (check.ok) {
+            log(`Button-choice confirmé (${check.reason}, React direct) : "${expectedText}".`);
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  };
+
   const applyResult = async (q, result) => {
     clearHighlights();
     state.agent.lastApplyVerified = false;
@@ -2472,16 +2869,13 @@
       const index = Number(result.choice);
       const choice = q.choices[index];
       if (!choice) throw new Error(`Choix hors limites: ${index}`);
-      highlight(choice.element);
-      const beforeClass = String(choice.element.className || "");
-      const beforeAria = ["aria-selected", "aria-pressed", "aria-checked"].map((a) => choice.element.getAttribute?.(a) || "").join("|");
-      const beforeRoot = q.root?.innerHTML || "";
-      const clicked = await clickElement(choice.element);
-      await wait(250);
-      const afterAria = ["aria-selected", "aria-pressed", "aria-checked"].map((a) => choice.element.getAttribute?.(a) || "").join("|");
-      const changed = beforeClass !== String(choice.element.className || "") || beforeAria !== afterAria || isControlSelected(choice.element) || (q.root?.innerHTML || "") !== beforeRoot;
-      state.agent.lastApplyVerified = !!clicked && !!changed;
-      if (!state.agent.lastApplyVerified) log("Clic button-choice non confirme par le DOM; navigation bloquee.");
+
+      // Ne pas injecter le badge de recommandation DANS la puce avant le clic :
+      // certains composants React utilisent le texte/target exact de la puce.
+      state.agent.lastApplyVerified = await clickButtonChoiceRobust(q, choice);
+      if (!state.agent.lastApplyVerified) {
+        log(`Clic button-choice non confirmé pour "${choice.text}"; validation/navigation bloquée.`);
+      }
       return state.agent.lastApplyVerified;
     }
 
@@ -2517,7 +2911,7 @@
         if (Number.isInteger(idx) && q.fields[idx] && !answerMap.has(idx)) answerMap.set(idx, String(a.text ?? "").trim());
       }
       if (answerMap.size !== q.fields.length || [...answerMap.values()].some((v) => !v)) {
-        log(`Fill-blank refuse: ${answerMap.size}/${q.fields.length} champ(s) fournis ou reponse vide.`);
+        log(`Fill-blank refusé : ${answerMap.size}/${q.fields.length} champ(s) fournis ou réponse vide.`);
         return false;
       }
       let applied = 0;
@@ -2593,7 +2987,7 @@
         log(`Auto-drop par clic ${position + 1}/${orderedPlacements.length}: item ${p.item} (${expected.text}) -> zone ${physicalZone}.`);
         const ok = await clickDragItemAutoDrop(q, p, expected.text);
         if (!ok) {
-          log(`Echec du placement par clic pour ${expected.text}; Valider/Suivant bloques.`);
+          log(`Échec du placement par clic pour ${expected.text}; Valider/Suivant bloqués.`);
           return false;
         }
 
@@ -2615,7 +3009,7 @@
       state.agent.lastApplyVerified = confirmed === orderedPlacements.length &&
         stillAvailable.length === 0 && finalEmptyZones.length === 0;
       if (!state.agent.lastApplyVerified) {
-        log(`Auto-drop final non confirme: ${confirmed}/${orderedPlacements.length} clic(s), mots encore dans la banque=${stillAvailable.length}, zones encore vides=${finalEmptyZones.length}. Validation bloquee.`);
+        log(`Auto-drop final non confirmé: ${confirmed}/${orderedPlacements.length} clic(s), mots encore dans la banque=${stillAvailable.length}, zones encore vides=${finalEmptyZones.length}. Validation bloquee.`);
       } else {
         log(`Auto-drop par clic termine: ${confirmed}/${orderedPlacements.length} placement(s) confirmes, aucune zone vide.`);
       }
@@ -2645,14 +3039,14 @@
 
         let target = getTarget();
         if (!target) {
-          log("Ordering drag: zone cible introuvable; navigation bloquee.");
+          log("Ordering drag: zone cible introuvable; navigation bloquée.");
           return false;
         }
 
         const initialTargetSnapshot = `${textOf(target)}::${target.innerHTML}`;
         let confirmed = 0;
 
-        // IMPORTANT: on place les fragments dans l'ordre donne par Groq, tous vers
+        // IMPORTANT: on placé les fragments dans l'ordre donne par Groq, tous vers
         // la MEME zone de phrase. Apres chaque placement React peut recreer la cible
         // et la banque de mots, donc on retrouve source + cible a chaque tour.
         for (let position = 0; position < order.length; position++) {
@@ -2673,7 +3067,7 @@
           log(`Ordering drag ${position + 1}/${order.length}: ${idx} (${original.text}) -> zone phrase.`);
           const placed = await dragAndDrop(source, target, `ordre ${position + 1}`, original.text);
           if (!placed) {
-            log(`Ordering drag: echec pour ${idx} (${original.text}); Valider/Suivant bloques.`);
+            log(`Ordering drag : échec pour ${idx} (${original.text}); Valider/Suivant bloqués.`);
             return false;
           }
 
@@ -2684,7 +3078,7 @@
           const targetContainsWord = !!target && norm(textOf(target)).includes(norm(original.text));
 
           if (!targetChanged && !sourceMoved && !targetContainsWord) {
-            log(`Ordering drag: placement ${idx} non confirme par le DOM; navigation bloquee.`);
+            log(`Ordering drag: placement ${idx} non confirmé par le DOM; navigation bloquée.`);
             return false;
           }
 
@@ -2696,7 +3090,7 @@
         await wait(500);
         target = getTarget();
         if (!target) {
-          log("Ordering drag: cible disparue avant verification finale.");
+          log("Ordering drag: cible disparue avant vérification finale.");
           return false;
         }
 
@@ -2706,10 +3100,10 @@
         let cursor = -1;
         let sequenceOk = true;
         for (const idx of order) {
-          const part = norm(q.items[idx].text);
-          const pos = finalText.indexOf(part, cursor + 1);
+          const part = q.items[idx].text;
+          const pos = findFragmentAfter(finalText, part, cursor + 1);
           if (pos < 0) { sequenceOk = false; break; }
-          cursor = pos;
+          cursor = pos + Math.max(1, norm(part).length);
         }
 
         const finalSnapshot = `${textOf(target)}::${target.innerHTML}`;
@@ -2718,7 +3112,7 @@
         const changed = finalSnapshot !== initialTargetSnapshot || confirmed === order.length;
         state.agent.lastApplyVerified = confirmed === order.length && changed && (sequenceOk || visualOk);
         if (!state.agent.lastApplyVerified) {
-          log(`Ordering drag non confirme: ${confirmed}/${order.length} placements, sequenceTexte=${sequenceOk ? "OK" : "KO"}, sequenceVisuelle=${visualOk ? "OK" : `[${visualOrder.join(",")}]`}. Navigation bloquee.`);
+          log(`Ordering drag non confirmé: ${confirmed}/${order.length} placements, sequenceTexte=${sequenceOk ? "OK" : "KO"}, sequenceVisuelle=${visualOk ? "OK" : `[${visualOrder.join(",")}]`}. Navigation bloquee.`);
         }
         return state.agent.lastApplyVerified;
       }
@@ -2726,7 +3120,7 @@
       if (q.mode === "click-order") {
         let target = orderingTargetLive(q);
         if (!target) {
-          log("Ordering clic: zone resultat introuvable; navigation bloquee.");
+          log("Ordering clic : zone résultat introuvable; navigation bloquée.");
           return false;
         }
         const beforeTarget = `${textOf(target)}::${target.innerHTML}`;
@@ -2741,7 +3135,7 @@
 
           const ok = await clickOrderingItemRobust(q, original);
           if (!ok) {
-            log(`Ordering: clic non confirme pour ${idx} (${original.text}); Valider/Suivant bloques.`);
+            log(`Ordering: clic non confirmé pour ${idx} (${original.text}); Valider/Suivant bloqués.`);
             return false;
           }
           confirmedClicks += 1;
@@ -2752,7 +3146,7 @@
         await wait(450);
         target = orderingTargetLive(q);
         if (!target) {
-          log("Ordering clic: zone resultat disparue avant verification finale.");
+          log("Ordering clic : zone résultat disparue avant vérification finale.");
           return false;
         }
 
@@ -2760,17 +3154,17 @@
         const targetText = norm(textOf(target));
         let lastPos = -1, sequenceOk = true;
         for (const idx of order) {
-          const part = norm(q.items[idx].text);
-          const pos = targetText.indexOf(part, lastPos + 1);
+          const part = q.items[idx].text;
+          const pos = findFragmentAfter(targetText, part, lastPos + 1);
           if (pos < 0) { sequenceOk = false; break; }
-          lastPos = pos;
+          lastPos = pos + Math.max(1, norm(part).length);
         }
 
         const visualOrder = orderingVisualSequence(q, target);
         const visualOk = visualOrder.length === order.length && visualOrder.every((idx, pos) => idx === order[pos]);
         const finalSnapshot = `${textOf(target)}::${target.innerHTML}`;
 
-        // Verification CRITIQUE v5.5: apres les clics, refaire le comptage sur TOUT le document.
+        // Verification CRITIQUE v5.5: après les clics, refaire le comptage sur TOUT le document.
         // S'il reste ne serait-ce qu'un fragment cliquable dans la banque, l'exercice n'est
         // pas termine et Valider doit rester strictement interdit.
         const finalInstruction = findOrderingInstructionElement(document.body);
@@ -2781,7 +3175,7 @@
         state.agent.lastApplyVerified = confirmedClicks === order.length &&
           finalSnapshot !== beforeTarget && (sequenceOk || visualOk) && noRemainingItems;
         if (!state.agent.lastApplyVerified) {
-          log(`Ordering clic non confirme: ${confirmedClicks}/${order.length}, reste=${finalState.remainingCount}, sequenceTexte=${sequenceOk ? "OK" : "KO"}, sequenceVisuelle=${visualOk ? "OK" : `[${visualOrder.join(",")}]`}. Valider bloque.`);
+          log(`Ordering clic non confirmé: ${confirmedClicks}/${order.length}, reste=${finalState.remainingCount}, sequenceTexte=${sequenceOk ? "OK" : "KO"}, sequenceVisuelle=${visualOk ? "OK" : `[${visualOrder.join(",")}]`}. Valider bloqué.`);
           if (finalState.remainingCount > 0) {
             log(`Ordering incomplet: ${finalState.remainingCount} fragment(s) encore cliquable(s): ${finalState.remainingItems.map((x)=>x.text).join(" | ")}`);
           }
@@ -2847,7 +3241,7 @@
     if (Array.isArray(result.order)) return result.order.join(" -> ");
     if (Array.isArray(result.pairs)) return result.pairs.map((p) => `${p.left}<->${p.right}`).join(" | ");
     if (Array.isArray(result.rows)) return result.rows.map((r) => `L${r.row}:${r.choice}`).join(" | ");
-    return "Reponse recue";
+    return "Réponse reçue";
   };
 
   const renderPanel = (q = null) => {
@@ -2865,6 +3259,11 @@
       state.agent.panel = p;
     }
 
+    state.agent.panel.style.width = state.agent.panelCollapsed ? "min(235px,calc(100vw - 32px))" : "min(380px,calc(100vw - 32px))";
+    state.agent.panel.style.maxHeight = state.agent.panelCollapsed ? "none" : "62vh";
+    state.agent.panel.style.overflow = state.agent.panelCollapsed ? "hidden" : "auto";
+    state.agent.panel.style.padding = state.agent.panelCollapsed ? "8px 10px" : "14px";
+
     const current = q || detectQuestion();
     const storedResult = state.agent.lastResult;
     const compatibleResult = !storedResult ? null :
@@ -2873,26 +3272,42 @@
         ? storedResult : null;
     const result = compatibleResult;
     const status = state.agent.blockReason ? `BLOQUE: ${state.agent.blockReason}` : state.agent.analyzing ? "Analyse en cours..." : result?.error ? result.error : "";
+    const providerList = result?.providers?.length ? result.providers.join(" + ") : (state.agent.lastProvider || state.config.agent.provider || "auto");
+    const modelLabel = state.agent.lastModel || (state.config.agent.model !== "auto" ? state.config.agent.model : "sélection automatique");
+    const pace = activityPacingStatus();
     state.agent.panel.innerHTML = `
-      <div style="font-weight:800;font-size:15px;margin-bottom:8px;">Global Exam Assistant v5.7 — Groq</div>
-      <div style="margin-bottom:6px;"><strong>Auto :</strong> ${state.config.agent.autoAnswer ? "ON" : "OFF"}</div>
-      ${(() => { const p = activityPacingStatus(); return p ? `<div style="margin-bottom:6px;"><strong>Rythme :</strong> cible ${Math.round(p.targetMinutes)} min — ecoule ~${Math.round(p.elapsedMinutes)} min</div>` : ""; })()}
-      <div style="margin-bottom:6px;"><strong>IA :</strong> Groq Cloud</div>
-      <div style="margin-bottom:6px;"><strong>Type :</strong> ${escapeHtml(current.type === "feedback" ? "correction / resultat" : (current.type || "-"))}</div>
-      ${current.type === "ordering" ? `<div style="margin-bottom:6px;"><strong>Interaction :</strong> ${escapeHtml(current.mode || "ordering")}</div><div style="margin-bottom:6px;"><strong>A selectionner :</strong> ${Number(current.requiredCount ?? current.items?.length ?? 0)}${Number(current.alreadySelectedCount || 0) ? ` restant(s) — ${Number(current.alreadySelectedCount)} deja place(s)` : ""}</div>` : ""}
-      ${current.type === "drag-drop" ? `<div style="margin-bottom:6px;"><strong>Interaction :</strong> ${escapeHtml(current.mode || "click-auto-drop")}</div>` : ""}
-      <div style="margin-bottom:6px;font-size:11px;color:#666;"><strong>Modele Groq :</strong> ${escapeHtml(state.config.agent.model)}</div>
-      <div style="margin-bottom:8px;"><strong>Reponse :</strong><br>${escapeHtml(resultSummary(current, result))}</div>
-      <div style="margin-bottom:8px;"><strong>Confiance :</strong> ${result && Number.isFinite(result.confidence) ? Math.round(result.confidence * 100) + " %" : "-"}</div>
-      ${result?.consensus ? `<div style="margin-bottom:8px;"><strong>Consensus :</strong> ${escapeHtml(result.consensus)}</div>` : ""}
-      <div style="margin-bottom:8px;"><strong>Explication :</strong><br>${escapeHtml(result?.explanation || "-")}</div>
-      ${status ? `<div style="margin-bottom:10px;color:${result?.error ? "#b91c1c" : "#2563eb"};">${escapeHtml(status)}</div>` : ""}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button id="gea-analyze" type="button" style="border:0;border-radius:7px;background:#2563eb;color:#fff;padding:8px 10px;cursor:pointer;">Analyser</button>
-        <button id="gea-answer" type="button" style="border:0;border-radius:7px;background:#16a34a;color:#fff;padding:8px 10px;cursor:pointer;">Repondre</button>
-        <button id="gea-auto" type="button" style="border:0;border-radius:7px;background:#9333ea;color:#fff;padding:8px 10px;cursor:pointer;">Auto: ${state.config.agent.autoAnswer ? "ON" : "OFF"}</button>
-      </div>`;
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="font-weight:800;font-size:15px;">Global Exam Assistant v6.3 — Multi-IA</div>
+        <button id="gea-collapse" type="button" title="${state.agent.panelCollapsed ? "Agrandir" : "Réduire"}" style="border:0;border-radius:7px;background:#e5e7eb;color:#111827;width:30px;height:28px;cursor:pointer;font-size:18px;line-height:1;flex:0 0 auto;">${state.agent.panelCollapsed ? "+" : "−"}</button>
+      </div>
+      ${state.agent.panelCollapsed ? `
+        <div style="margin-top:5px;font-size:11px;color:#4b5563;">Auto ${state.config.agent.autoAnswer ? "ON" : "OFF"} · ${escapeHtml(providerList)}</div>
+      ` : `
+        <div style="margin-top:8px;margin-bottom:6px;"><strong>Auto :</strong> ${state.config.agent.autoAnswer ? "ON" : "OFF"}</div>
+        ${pace ? `<div style="margin-bottom:6px;"><strong>Rythme :</strong> cible ${Math.round(pace.targetMinutes)} min — écoulé ~${Math.round(pace.elapsedMinutes)} min</div>` : ""}
+        <div style="margin-bottom:6px;"><strong>IA :</strong> ${escapeHtml(providerList)}</div>
+        <div style="margin-bottom:6px;"><strong>Type :</strong> ${escapeHtml(current.type === "feedback" ? "correction / résultat" : (current.type || "-"))}</div>
+        ${current.type === "ordering" ? `<div style="margin-bottom:6px;"><strong>Interaction :</strong> ${escapeHtml(current.mode || "ordering")}</div><div style="margin-bottom:6px;"><strong>À sélectionner :</strong> ${Number(current.requiredCount ?? current.items?.length ?? 0)}${Number(current.alreadySelectedCount || 0) ? ` restant(s) — ${Number(current.alreadySelectedCount)} déjà placé(s)` : ""}</div>` : ""}
+        ${current.type === "drag-drop" ? `<div style="margin-bottom:6px;"><strong>Interaction :</strong> ${escapeHtml(current.mode || "click-auto-drop")}</div>` : ""}
+        <div style="margin-bottom:6px;font-size:11px;color:#666;"><strong>Modèle :</strong> ${escapeHtml(modelLabel)}</div>
+        <div style="margin-bottom:8px;"><strong>Réponse :</strong><br>${escapeHtml(resultSummary(current, result))}</div>
+        <div style="margin-bottom:8px;"><strong>Confiance :</strong> ${result && Number.isFinite(result.confidence) ? Math.round(result.confidence * 100) + " %" : "-"}</div>
+        ${result?.consensus ? `<div style="margin-bottom:8px;"><strong>Consensus :</strong> ${escapeHtml(result.consensus)}</div>` : ""}
+        <div style="margin-bottom:8px;"><strong>Explication :</strong><br>${escapeHtml(result?.explanation || "-")}</div>
+        ${status ? `<div style="margin-bottom:10px;color:${result?.error ? "#b91c1c" : "#2563eb"};">${escapeHtml(status)}</div>` : ""}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="gea-analyze" type="button" style="border:0;border-radius:7px;background:#2563eb;color:#fff;padding:8px 10px;cursor:pointer;">Analyser</button>
+          <button id="gea-answer" type="button" style="border:0;border-radius:7px;background:#16a34a;color:#fff;padding:8px 10px;cursor:pointer;">Répondre</button>
+          <button id="gea-auto" type="button" style="border:0;border-radius:7px;background:#9333ea;color:#fff;padding:8px 10px;cursor:pointer;">Auto : ${state.config.agent.autoAnswer ? "ON" : "OFF"}</button>
+        </div>
+      `}`;
 
+    state.agent.panel.querySelector("#gea-collapse").onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      state.agent.panelCollapsed = !state.agent.panelCollapsed;
+      renderPanel(current);
+    };
+    if (state.agent.panelCollapsed) return;
     state.agent.panel.querySelector("#gea-analyze").onclick = (e) => { e.preventDefault(); e.stopPropagation(); analyzeCurrentQuestion(); };
     state.agent.panel.querySelector("#gea-answer").onclick = (e) => { e.preventDefault(); e.stopPropagation(); answerCurrentQuestion(); };
     state.agent.panel.querySelector("#gea-auto").onclick = (e) => { e.preventDefault(); e.stopPropagation(); toggleAutoAnswer(); };
@@ -2977,6 +3392,9 @@
     .filter((c)=>structurallyValidResult(q,c))
     .sort((a,b)=>Number(b.confidence||0)-Number(a.confidence||0))[0] || null;
 
+  const mergeProviders = (...results) => [...new Set(results.flatMap((r) => Array.isArray(r?.providers) ? r.providers : (r?.provider ? [r.provider] : [])))]
+    .filter(Boolean);
+
   const resultSignature = (q, result) => {
     if (!result) return "";
     if (q.type === "single-choice" || q.type === "button-choice") return `choice:${Number(result.choice)}`;
@@ -3036,26 +3454,26 @@
     const a = JSON.stringify(first);
     const b = JSON.stringify(second);
     return [
-      "Deux analyses independantes ne donnent pas la meme reponse.",
-      "Tu es l'arbitre final. Reprends l'exercice depuis zero avec les ITEMS et ZONES/CHAMPS fournis dans le prompt principal.",
+      "Deux analyses indépendantes ne donnent pas la même réponse.",
+      "Tu es l'arbitre final. Reprends l'exercice depuis zéro avec les ITEMS et ZONES/CHAMPS fournis dans le prompt principal.",
       "Compare les deux candidats ci-dessous, mais ne leur fais pas confiance automatiquement.",
-      "La reponse finale doit etre semantiquement coherente avec ton explication et respecter exactement le schema strict.",
+      "La réponse finale doit être sémantiquement cohérente avec ton explication et respecter exactement le schéma strict.",
       q.type === "drag-drop" ? "Pour un drag-drop, lis la position [[ZONE_n]] dans chaque contexte et associe chaque item exactement une fois." : "",
       `Candidat A: ${a}`,
       `Candidat B: ${b}`,
-      "Renvoie uniquement la reponse finale corrigee."
+      "Renvoie uniquement la réponse finale corrigée."
     ].filter(Boolean).join("\n");
   };
 
   const analyzeCurrentQuestion = async () => {
-    if (state.agent.analyzing) { agentLog("Analyse deja en cours."); return null; }
+    if (state.agent.analyzing) { agentLog("Analyse déjà en cours."); return null; }
     const q = detectQuestion();
     if (q.type === "feedback") {
-      state.agent.lastResult = { error: "Page de correction/resultat: aucune analyse necessaire." };
+      state.agent.lastResult = { error: "Page de correction/résultat : aucune analyse nécessaire." };
       renderPanel(q); return state.agent.lastResult;
     }
     if (q.type === "none") {
-      state.agent.lastResult = { error: "Aucune question interactive detectee." };
+      state.agent.lastResult = { error: "Aucune question interactive détectée." };
       renderPanel(q); return state.agent.lastResult;
     }
     if (q.type === "unknown-question") {
@@ -3064,34 +3482,52 @@
       renderPanel(q); return state.agent.lastResult;
     }
 
+    // Cas déterministe : un seul choix visible pour un seul trou.
+    // Il n'y a rien à arbitrer avec une IA : la seule action possible est ce choix.
+    if (q.type === "button-choice" && q.choices?.length === 1 && isSingleChoiceFillContext(q.root)) {
+      const result = {
+        choice: 0,
+        confidence: 1,
+        explanation: `Un seul choix est disponible pour le seul trou : "${q.choices[0].text}".`,
+        consensus: "déterministe",
+        providers: ["règle-locale"],
+      };
+      state.agent.lastQuestionKey = q.key;
+      state.agent.lastResult = result;
+      agentLog(`Choix unique détecté ("${q.choices[0].text}") : aucune requête IA nécessaire.`);
+      renderPanel(q);
+      return result;
+    }
+
     state.agent.analyzing = true;
     state.agent.lastQuestionKey = q.key;
     state.agent.lastResult = null;
     renderPanel(q);
     try {
       agentLog(`Analyse du type ${q.type}.`);
-      let result = normalizeResultForQuestion(q, await askGroqAgent(q));
+      let result = normalizeResultForQuestion(q, await askAiAgent(q, "", 0));
       if (needsDoubleCheck(q)) {
-        agentLog(`Double verification Groq pour ${q.type}...`);
-        const review = normalizeResultForQuestion(q, await askGroqAgent(q, "Refais le raisonnement independamment. Verifie tous les index et renvoie la reponse finale selon le meme schema strict."));
+        agentLog(`Double vérification multi-IA pour ${q.type}...`);
+        const review = normalizeResultForQuestion(q, await askAiAgent(q, "Refais le raisonnement indépendamment. Vérifie tous les index et renvoie la réponse finale selon le même schéma strict.", 1));
         const sigA = resultSignature(q, result);
         const sigB = resultSignature(q, review);
         const validA = structurallyValidResult(q, result);
         const validB = structurallyValidResult(q, review);
 
         if (sigA === sigB && validA && validB) {
-          // v5.0: deux analyses independantes qui donnent exactement la meme structure
-          // constituent un signal plus utile que le "confidence" auto-declare du modele.
+          // v5.0: deux analyses indépendantes qui donnent exactement la meme structure
+          // constituent un signal plus utile que le "confidence" auto-déclaré du modèle.
           // On ne laisse donc plus une seule valeur aberrante (ex: 25%) faire tomber
-          // une reponse 2/2 sous le seuil d'application.
+          // une réponse 2/2 sous le seuil d'application.
           const aConf = Number(result.confidence || 0.5);
           const bConf = Number(review.confidence || 0.5);
           result.confidence = Math.max(aConf, bConf, state.config.agent.consensusConfidenceFloor);
           result.consensus = "2/2";
-          agentLog(`Double verification coherente pour ${q.type} (consensus 2/2).`);
+          result.providers = mergeProviders(result, review);
+          agentLog(`Double vérification cohérente pour ${q.type} (consensus 2/2, ${result.providers.join(" + ") || "IA"}).`);
         } else if (state.config.agent.adjudicateOnDisagreement) {
-          agentLog(`Desaccord IA pour ${q.type}; arbitrage Groq...`);
-          let finalReview = normalizeResultForQuestion(q, await askGroqAgent(q, adjudicationNote(q, result, review)));
+          agentLog(`Désaccord multi-IA pour ${q.type}; arbitrage avec un troisième slot fournisseur...`);
+          let finalReview = normalizeResultForQuestion(q, await askAiAgent(q, adjudicationNote(q, result, review), 2));
           let finalValid = structurallyValidResult(q, finalReview);
 
           // v4.9: un arbitre peut exceptionnellement renvoyer [] ou un format inutilisable
@@ -3099,26 +3535,26 @@
           // de bloquer toute l'automatisation immediatement.
           for (let repair = 0; !finalValid && repair < state.config.agent.adjudicationRepairAttempts; repair++) {
             agentLog(`Arbitrage ${q.type} invalide; reparation ${repair + 1}/${state.config.agent.adjudicationRepairAttempts}...`);
-            finalReview = normalizeResultForQuestion(q, await askGroqAgent(q, [
-              "La reponse d'arbitrage precedente etait structurellement invalide.",
-              `Reponse invalide: ${JSON.stringify(finalReview)}`,
-              q.type === "multi-choice" ? `Tu DOIS retourner au moins un index dans choices, uniquement parmi 0..${Math.max(0,(q.choices?.length||1)-1)}.` : "Corrige uniquement la structure et les index en resolvant a nouveau l'exercice.",
-              "Respecte exactement le schema JSON strict."
-            ].join("\n")));
+            finalReview = normalizeResultForQuestion(q, await askAiAgent(q, [
+              "La réponse d'arbitrage précédente était structurellement invalide.",
+              `Réponse invalide : ${JSON.stringify(finalReview)}`,
+              q.type === "multi-choice" ? `Tu DOIS retourner au moins un index dans choices, uniquement parmi 0..${Math.max(0,(q.choices?.length||1)-1)}.` : "Corrige uniquement la structure et les index en résolvant à nouveau l'exercice.",
+              "Respecte exactement le schéma JSON strict."
+            ].join("\n"), 2));
             finalValid = structurallyValidResult(q, finalReview);
           }
 
           if (!finalValid) {
-            // Dernier filet de securite: si A ou B etait deja une reponse parfaitement valide
+            // Dernier filet de sécurité: si A ou B etait déjà une réponse parfaitement valide
             // avec une confiance suffisante, on garde la meilleure au lieu d'un hard-block cause
-            // uniquement par un arbitre mal forme. On ne navigue toujours qu'apres verification DOM.
+            // uniquement par un arbitre mal formé. On ne navigue toujours qu'après vérification DOM.
             const fallback = bestValidCandidate(q, [result, review]);
             if (fallback && Number(fallback.confidence || 0) >= state.config.agent.adjudicationFallbackMinConfidence) {
               result = fallback;
               result.confidence = Math.min(Number(result.confidence || 0.5), 0.88);
               agentLog(`Arbitrage invalide; fallback sur le meilleur candidat valide pour ${q.type}.`);
             } else {
-              hardBlock(q.key, `Arbitrage IA invalide pour ${q.type} apres reparations. Aucune reponse appliquee.`);
+              hardBlock(q.key, `Arbitrage IA invalide pour ${q.type} apres reparations. Aucune réponse appliquée.`);
               state.agent.lastResult = { error: state.agent.blockReason };
               return state.agent.lastResult;
             }
@@ -3130,9 +3566,11 @@
             // S'il propose une troisieme solution, on ne l'accepte qu'avec une confiance elevee.
             if (sigFinal === sigA || sigFinal === sigB) {
               const matched = sigFinal === sigA ? result : review;
+              const consensusProviders = mergeProviders(result, review, finalReview);
               result = finalReview;
+              result.providers = consensusProviders;
               // v5.0: l'arbitre + un candidat = consensus 2/3. Le score de confiance
-              // auto-declare de l'arbitre ne doit pas annuler ce consensus structurel.
+              // auto-déclaré de l'arbitre ne doit pas annuler ce consensus structurel.
               result.confidence = Math.max(
                 finalConfidence,
                 Number(matched?.confidence || 0.5),
@@ -3141,7 +3579,9 @@
               result.consensus = "2/3";
               agentLog(`Arbitrage confirme un candidat pour ${q.type} (consensus 2/3).`);
             } else if (finalConfidence >= state.config.agent.adjudicationMinConfidence) {
+              const correctionProviders = mergeProviders(result, review, finalReview);
               result = finalReview;
+              result.providers = correctionProviders;
               result.confidence = Math.min(finalConfidence, 0.90);
               agentLog(`Arbitrage fournit une solution corrigee pour ${q.type}.`);
             } else {
@@ -3151,21 +3591,21 @@
                 result.confidence = Math.min(Number(result.confidence || 0.5), 0.86);
                 agentLog(`Arbitrage peu confiant; fallback candidat valide pour ${q.type}.`);
               } else {
-                hardBlock(q.key, `Desaccord IA persistant pour ${q.type} (arbitrage ${Math.round(finalConfidence * 100)}%). Aucune reponse appliquee.`);
+                hardBlock(q.key, `Desaccord IA persistant pour ${q.type} (arbitrage ${Math.round(finalConfidence * 100)}%). Aucune réponse appliquée.`);
                 state.agent.lastResult = { error: state.agent.blockReason };
                 return state.agent.lastResult;
               }
             }
           }
         } else {
-          hardBlock(q.key, `Double verification IA incoherente pour ${q.type}. Aucune reponse appliquee.`);
+          hardBlock(q.key, `Double vérification IA incohérente pour ${q.type}. Aucune réponse appliquée.`);
           state.agent.lastResult = { error: state.agent.blockReason };
           return state.agent.lastResult;
         }
       }
       const now = detectQuestion();
       if (now.type !== "feedback" && now.type !== "none" && !sameQuestion(q, now)) {
-        agentLog("Une vraie nouvelle question a ete detectee pendant l'analyse; resultat ignore.");
+        agentLog("Une vraie nouvelle question a été détectée pendant l'analyse ; résultat ignoré.");
         return null;
       }
       state.agent.lastResult = { ...result, questionType: q.type, questionKey: q.key, questionPrompt: q.prompt };
@@ -3209,7 +3649,7 @@
     if (q.type === 'multi-choice') {
       const actual = selectedChoiceIndexesLive(q).sort((a,b) => a-b);
       // Pour un multi-choice, une selection existante n'est declaree "complete" que
-      // si elle correspond a la derniere reponse IA connue ou si cette page a deja ete
+      // si elle correspond a la dernière réponse IA connue ou si cette page a déjà ete
       // verifiee par applyResult(). Sinon on ne devine pas le nombre de bonnes cases.
       const last = state.agent.lastResult;
       const expected = Array.isArray(last?.choices) ? [...new Set(last.choices.map(Number).filter(Number.isInteger))].sort((a,b)=>a-b) : [];
@@ -3237,7 +3677,7 @@
       const has = !!st.target && (!!norm(zoneDirectText(st.target)) || st.selectedCount > 0);
       return {
         state: has && st.remainingCount === 0 ? 'complete' : has ? 'partial' : 'empty',
-        detail: `${st.remainingCount} restant(s), ${st.selectedCount} deja place(s), total detecte ${st.totalCount}`
+        detail: `${st.remainingCount} restant(s), ${st.selectedCount} déjà placé(s), total détecté ${st.totalCount}`
       };
     }
 
@@ -3256,15 +3696,15 @@
     if (!result || result.error) return false;
 
     // v5.0: une confiance basse signifie qu'aucune application n'a encore ete tentee.
-    // Ne jamais compter cela comme un "echec d'application" et répéter cinq fois le
+    // Ne jamais compter cela comme un "échec d'application" et répéter cinq fois le
     // même résultat à 25 %. On force une nouvelle analyse, avec une limite séparée.
     if (Number(result.confidence || 0) < state.config.agent.autoConfidenceThreshold) {
       const low = (state.agent.lowConfidenceRetries.get(q.key) || 0) + 1;
       state.agent.lowConfidenceRetries.set(q.key, low);
-      log(`Confiance trop faible (${Math.round(Number(result.confidence || 0) * 100)}%). Reanalyse ${low}/${state.config.agent.lowConfidenceMaxReanalyses}.`);
+      log(`Confiance trop faible (${Math.round(Number(result.confidence || 0) * 100)}%). Réanalyse ${low}/${state.config.agent.lowConfidenceMaxRéanalyses}.`);
       state.agent.lastResult = null;
-      if (low >= state.config.agent.lowConfidenceMaxReanalyses) {
-        hardBlock(q.key, `${q.type}: confiance IA insuffisante apres ${low} analyses independantes. Aucune reponse appliquee.`);
+      if (low >= state.config.agent.lowConfidenceMaxRéanalyses) {
+        hardBlock(q.key, `${q.type}: confiance IA insuffisante apres ${low} analyses indépendantes. Aucune réponse appliquée.`);
       }
       return false;
     }
@@ -3280,11 +3720,19 @@
       return true;
     }
 
-    if (state.agent.partialMutation && ["drag-drop", "ordering"].includes(q.type)) {
-      // v5.0: si certains drops ont ete CONFIRMES puis qu'un suivant echoue,
-      // on ne jette pas tout l'exercice. React a maintenant un nouvel etat:
-      // on efface l'ancienne reponse et on laisse la boucle re-detecter les items/zones restants.
-      agentLog(`${q.type}: progression partielle confirmee; nouvelle analyse sur l'etat restant.`);
+    if (state.agent.partialMutation && q.type === "ordering") {
+      agentLog("Ordering: progression partielle détectée; remise à zéro complète avant de recalculer l'ordre.");
+      const resetOk = await resetOrderingSelection(q);
+      state.agent.lastResult = null;
+      state.agent.applyAttempts.delete(q.key);
+      state.agent.lowConfidenceRetries.delete(q.key);
+      state.agent.partialMutation = false;
+      if (!resetOk) hardBlock(q.key, "Ordering partiel impossible à réinitialiser automatiquement. Intervention manuelle requise.");
+      return false;
+    }
+    if (state.agent.partialMutation && q.type === "drag-drop") {
+      // Pour les trous indépendants, conserver les placements déjà confirmés est sûr.
+      agentLog("drag-drop: progression partielle confirmée; nouvelle analyse uniquement sur l'état restant.");
       state.agent.lastResult = null;
       state.agent.applyAttempts.delete(q.key);
       state.agent.lowConfidenceRetries.delete(q.key);
@@ -3292,14 +3740,14 @@
       return false;
     }
     if (state.agent.partialMutation && q.type === "matching") {
-      hardBlock(q.key, `${q.type}: modification partielle detectee puis echec. Intervention manuelle requise.`);
+      hardBlock(q.key, `${q.type}: modification partielle détectée puis échec. Intervention manuelle requise.`);
       return false;
     }
     if (["drag-drop", "ordering"].includes(q.type) && attempts < state.config.agent.maxApplyAttempts) {
-      log(`${q.type}: tentative ${attempts}/${state.config.agent.maxApplyAttempts} non confirmee; la page reste en place et sera retentee.`);
+      log(`${q.type}: tentative ${attempts}/${state.config.agent.maxApplyAttempts} non confirmée; la page reste en place et sera retentee.`);
     }
     if (attempts >= state.config.agent.maxApplyAttempts) {
-      hardBlock(q.key, `${q.type}: ${attempts} tentatives d'application non confirmees.`);
+      hardBlock(q.key, `${q.type}: ${attempts} tentatives d'application non confirmées.`);
     }
     return false;
   };
@@ -3324,7 +3772,7 @@
     const completedBefore = progress && progress.total ? Math.max(0, progress.current - 1) / progress.total : 0;
     state.activity.inferredStartedAt = now - Math.round(targetMs * completedBefore);
     state.activity.id = `${progress?.total || '?'}::${now}`;
-    log(`Rythme activite initialise: cible ${Math.round(targetMs / 60000)} min (${progress ? `${progress.current}/${progress.total}` : 'progression inconnue'}).`);
+    log(`Rythme activité initialisé: cible ${Math.round(targetMs / 60000)} min (${progress ? `${progress.current}/${progress.total}` : 'progression inconnue'}).`);
   };
 
   const ensureActivityPacing = () => {
@@ -3357,9 +3805,23 @@
     const dueAt = state.activity.inferredStartedAt + desiredElapsed;
     const remaining = dueAt - Date.now();
     if (remaining <= 0) return true;
-    log(`Rythme activite: attente ${Math.ceil(remaining / 1000)}s avant ${label} pour viser ${Math.round(state.activity.targetDurationMs / 60000)} min au total.`);
+
+    // v6.2 : une action manuelle doit interrompre IMMÉDIATEMENT une attente de rythme.
+    // Avant, la boucle pouvait rester coincée plusieurs minutes ici avec state.running=true,
+    // ce qui empêchait la reprise Auto malgré le clic manuel sur Valider/Suivant/Passer.
+    const resumeTokenAtStart = state.agent.manualResumeToken;
+    const fingerprintAtStart = pageFingerprint();
+    log(`Rythme activité : attente ${Math.ceil(remaining / 1000)}s avant ${label} pour viser ${Math.round(state.activity.targetDurationMs / 60000)} min au total.`);
     const end = Date.now() + remaining;
-    while (!state.stopRequested && Date.now() < end) await wait(Math.min(1000, end - Date.now()));
+    while (!state.stopRequested && Date.now() < end) {
+      if (state.agent.manualResumeToken !== resumeTokenAtStart ||
+          state.agent.manualResumePending ||
+          pageFingerprint() !== fingerprintAtStart) {
+        log(`Attente de rythme interrompue par une action/navigation manuelle; reprise Auto prioritaire.`);
+        return false;
+      }
+      await wait(Math.min(250, end - Date.now()));
+    }
     return !state.stopRequested;
   };
 
@@ -3368,14 +3830,14 @@
     const result = state.agent.lastResult;
     const reasons = [];
 
-    if (!state.agent.lastApplyVerified && q?.type !== 'answered') reasons.push('application DOM non confirmee');
+    if (!state.agent.lastApplyVerified && q?.type !== 'answered') reasons.push('application DOM non confirmée');
     if (result?.error) reasons.push(`erreur IA: ${result.error}`);
     if (result && Number(result.confidence || 0) < state.config.agent.autoConfidenceThreshold && !result.consensus) reasons.push(`confiance IA trop faible (${Math.round(Number(result.confidence || 0) * 100)}%)`);
 
     if (q?.type === 'single-choice') {
       const selected = (q.choices || []).map((c,i)=>isControlSelected(c.input || c.element) ? i : null).filter((x)=>x!==null);
       if (selected.length !== 1) reasons.push(`single-choice: ${selected.length} selection(s)`);
-      if (result && Number.isInteger(Number(result.choice)) && selected[0] !== Number(result.choice)) reasons.push('single-choice different de la reponse IA');
+      if (result && Number.isInteger(Number(result.choice)) && selected[0] !== Number(result.choice)) reasons.push('single-choice différent de la réponse IA');
     }
     if (q?.type === 'multi-choice') {
       const actual = selectedChoiceIndexesLive(q).sort((a,b)=>a-b);
@@ -3386,7 +3848,7 @@
       const values = (q.fields || []).map((f)=>String(f.element?.value || '').trim());
       if (values.some((v)=>!v)) reasons.push('champ texte encore vide');
       const expected = new Map((result?.answers || []).map((a)=>[Number(a.field), norm(String(a.text || ''))]));
-      values.forEach((v,i)=>{ if (expected.has(i) && norm(v) !== expected.get(i)) reasons.push(`champ ${i} different de la reponse IA`); });
+      values.forEach((v,i)=>{ if (expected.has(i) && norm(v) !== expected.get(i)) reasons.push(`champ ${i} différent de la réponse IA`); });
     }
     if (q?.type === 'select' || q?.type === 'multi-select') {
       const incomplete = (q.fields || []).filter((f)=>f.kind === 'select' && (!f.element?.value || Number(f.element?.selectedIndex) <= 0));
@@ -3400,7 +3862,7 @@
         const usedTexts = result.placements.map((p)=>norm(q.items?.[Number(p.item)]?.text || '')).filter(Boolean);
         const pool = collectDragItems(findQuestionRoot()).map((x)=>norm(x.text));
         const remainingUsed = usedTexts.filter((t)=>pool.includes(t));
-        if (remainingUsed.length) reasons.push(`${remainingUsed.length} mot(s) cense(s) etre place(s) encore dans la banque`);
+        if (remainingUsed.length) reasons.push(`${remainingUsed.length} mot(s) censé(s) être placé(s) encore dans la banque`);
       }
     }
     if (q?.type === 'ordering' || q?.answeredKind === 'ordering') {
@@ -3408,7 +3870,7 @@
       const target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);
       const st = orderingSelectionState(document.body, instruction, target);
       if (st.remainingCount > 0) reasons.push(`ordering incomplet: ${st.remainingCount} fragment(s) encore disponible(s)`);
-      if (!target) reasons.push('zone resultat ordering introuvable');
+      if (!target) reasons.push('zone résultat ordering introuvable');
       if (q?.type === 'ordering' && Array.isArray(result?.order)) {
         const qm = (q.items || []).findIndex((item)=>/^\?+$/.test(String(item.text || '').trim()));
         if (qm >= 0 && Number(result.order[result.order.length - 1]) !== qm) reasons.push('le fragment ? doit etre le dernier');
@@ -3421,9 +3883,13 @@
     }
 
     const visibleZones = getLiveZoneElements(document.body);
-    if (visibleZones.length >= 2) {
+    const fillLikeInstruction =
+      bodyInstruction().includes(normLoose("fill in the blank")) ||
+      bodyInstruction().includes(normLoose("fill in the blanks")) ||
+      bodyInstruction().includes(normLoose("complete the"));
+    if (visibleZones.length >= 2 || (fillLikeInstruction && visibleZones.length >= 1)) {
       const empty = visibleZones.filter((z)=>!isZoneFilled(z));
-      if (empty.length) reasons.push(`controle global: ${empty.length}/${visibleZones.length} zone(s) vide(s)`);
+      if (empty.length) reasons.push(`contrôle global: ${empty.length}/${visibleZones.length} zone(s) vide(s)`);
     }
 
     const uniqueReasons = [...new Set(reasons)];
@@ -3532,12 +3998,12 @@
       renderPanel(q);
 
       if (state.agent.blockedKey && state.agent.blockedKey === q.key) {
-        log(`Page bloquee par securite: ${state.agent.blockReason}`);
+        log(`Page bloquée par sécurité: ${state.agent.blockReason}`);
         return false;
       }
 
       if (q.type === "answered") {
-        log(`Reponse deja presente dans le DOM (${q.answeredKind || "exercice"}, ${q.detail || "complete"}). Aucune nouvelle analyse IA.`);
+        log(`Réponse déjà présente dans le DOM (${q.answeredKind || "exercice"}, ${q.detail || "complete"}). Aucune nouvelle analyse IA.`);
         state.agent.lastApplyVerified = true;
         rememberAppliedPage(q, 'dom-existing');
         clearHighlights();
@@ -3546,20 +4012,20 @@
         const validate = findActionButton(state.config.validateTexts);
         if (validate) {
           if (!(await auditAndPaceBeforeSubmit(q, `validation "${controlText(validate)}"`))) return false;
-          log(`Reponse deja remplie: validation via "${controlText(validate)}".`);
+          log(`Réponse déjà remplie: validation via "${controlText(validate)}".`);
           if (!(await clickElement(validate))) return false;
           const outcome = await waitForValidationOutcome(q);
-          if (outcome === 'feedback') return await navigatePassivePage('Apres validation reponse existante');
+          if (outcome === 'feedback') return await navigatePassivePage('Après validation réponse existante');
           if (outcome === 'changed') return true;
           if (outcome === 'ready-next') return await nextIfPresent();
-          hardBlock(q.key, 'Reponse deja presente mais validation non confirmee; aucune navigation forcee.');
+          hardBlock(q.key, 'Réponse déjà présente mais validation non confirmée; aucune navigation forcee.');
           return false;
         }
 
         const next = findActionButton(state.config.nextTexts);
         if (next) {
           if (!(await auditAndPaceBeforeSubmit(q, `soumission "${controlText(next)}"`))) return false;
-          log(`Reponse deja presente et aucun Valider: navigation via "${controlText(next)}".`);
+          log(`Réponse déjà présente et aucun Valider: navigation via "${controlText(next)}".`);
           await clickElement(next);
           return true;
         }
@@ -3567,13 +4033,13 @@
       }
 
       if (q.type === "feedback") {
-        log("Page de correction/resultat detectee: aucune analyse IA.");
+        log("Page de correction/résultat détectée: aucune analyse IA.");
         state.agent.lastResult = null;
         state.agent.lastApplyVerified = false;
         clearHighlights();
         renderPanel(q);
         await waitForStablePage(500);
-        return await navigatePassivePage("Correction/resultat");
+        return await navigatePassivePage("Correction/résultat");
       }
 
       if (q.type === "unknown-question") {
@@ -3584,7 +4050,7 @@
       }
 
       if (q.type === "none") {
-        log("Page sans question detectee; verification de stabilite avant navigation.");
+        log("Page sans question détectée ; vérification de stabilité avant navigation.");
         await waitForStablePage(state.config.agent.contentStabilityMs, state.config.agent.pageSettleMaxMs);
         q = detectQuestion();
         if (q.type !== "none") {
@@ -3594,69 +4060,80 @@
         return await navigatePassivePage("Page sans question stable");
       }
 
-      agentLog(`Question detectee: ${q.type}.`);
+      agentLog(`Question détectée: ${q.type}.`);
 
       const existing = existingResponseState(q);
       if (existing.state === 'complete') {
-        log(`Reponse deja renseignee (${existing.detail || q.type}); aucune nouvelle application IA.`);
+        log(`Réponse déjà renseignée (${existing.detail || q.type}); aucune nouvelle application IA.`);
         state.agent.lastApplyVerified = true;
         rememberAppliedPage(q, 'preflight-existing');
 
         const validateExisting = findActionButton(state.config.validateTexts);
         if (validateExisting) {
           if (!(await auditAndPaceBeforeSubmit(q, `validation "${controlText(validateExisting)}"`))) return false;
-          log(`Reponse existante: validation via "${controlText(validateExisting)}".`);
+          log(`Réponse existante: validation via "${controlText(validateExisting)}".`);
           if (!(await clickElement(validateExisting))) return false;
           const outcome = await waitForValidationOutcome(q);
-          if (outcome === 'feedback') return await navigatePassivePage('Apres validation reponse existante');
+          if (outcome === 'feedback') return await navigatePassivePage('Après validation réponse existante');
           if (outcome === 'changed') return true;
           if (outcome === 'ready-next') return await nextIfPresent();
-          hardBlock(q.key, 'Reponse existante detectee mais validation non confirmee; Suivant bloque.');
+          hardBlock(q.key, 'Réponse existante détectée mais validation non confirmée; Suivant bloque.');
           return false;
         }
 
         const nextExisting = findActionButton(state.config.nextTexts);
         if (nextExisting) {
           if (!(await auditAndPaceBeforeSubmit(q, `soumission "${controlText(nextExisting)}"`))) return false;
-          log(`Reponse existante sans bouton Valider: navigation via "${controlText(nextExisting)}".`);
+          log(`Réponse existante sans bouton Valider: navigation via "${controlText(nextExisting)}".`);
           await clickElement(nextExisting);
           return true;
         }
         return false;
       }
 
-      if (existing.state === 'partial') {
-        log(`Reponse partielle deja presente (${existing.detail}). Le script conserve l'etat existant et ne doit remplir que ce qui manque.`);
+      if (existing.state === 'partial' && q.type === 'ordering') {
+        const resetOk = await resetOrderingSelection(q);
+        if (!resetOk) {
+          hardBlock(q.key, "Ordering partiel: remise à zéro non confirmée. Aucune validation automatique.");
+          return false;
+        }
+        state.agent.lastResult = null;
+        state.agent.lastApplyVerified = false;
+        q = detectQuestion();
+        renderPanel(q);
+        log("Ordering remis à zéro; nouvelle analyse complète de tous les fragments.");
+      } else if (existing.state === 'partial') {
+        log(`Réponse partielle déjà présente (${existing.detail}). Le script conserve uniquement les éléments déjà confirmés.`);
       }
 
       if (!state.config.agent.autoAnswer) {
-        log("Auto-reponse OFF: aucune validation/navigation automatique sur une question.");
+        log("Auto-réponse OFF: aucune validation/navigation automatique sur une question.");
         return false;
       }
 
       const pageBeforeAnswer = pageTransitionSnapshot();
       const ok = await answerCurrentQuestion();
       if (!ok || !state.agent.lastApplyVerified) {
-        log("Reponse non appliquee ou non verifiee: Valider/Suivant strictement bloques.");
+        log("Réponse non appliquée ou non vérifiée: Valider/Suivant strictement bloques.");
         return false;
       }
 
       await wait(450);
       const afterApply = detectQuestion();
       if (afterApply.type === "feedback" || isFeedbackPage()) {
-        log("La reponse a declenche directement une page de correction.");
-        return await navigatePassivePage("Correction apres reponse");
+        log("La réponse a déclenché directement une page de correction.");
+        return await navigatePassivePage("Correction après réponse");
       }
 
       // v5.3: NE PAS confondre mutation du DOM avec navigation.
-      // Apres le dernier drop/clic, le detecteur peut passer drag-drop -> answered/button-choice.
+      // Apres le dernier drop/clic, le détecteur peut passer drag-drop -> answered/button-choice.
       // Tant que N/Total n'a pas change, on est toujours sur la meme question et il faut Valider.
       if (!["none", "unknown-question"].includes(afterApply.type) && !sameQuestion(q, afterApply)) {
         if (hasReallyNavigated(pageBeforeAnswer, q, afterApply)) {
-          log("Vraie navigation detectee apres application (progression changee); aucun clic supplementaire.");
+          log("Vraie navigation détectée après application (progression changee); aucun clic supplementaire.");
           return true;
         }
-        log(`DOM/type modifie apres application (${q.type} -> ${afterApply.type}) mais meme progression ${currentProgressMarker() || "?"}; validation maintenue.`);
+        log(`DOM/type modifié après application (${q.type} -> ${afterApply.type}) mais meme progression ${currentProgressMarker() || "?"}; validation maintenue.`);
       }
 
       const validateBtn = findActionButton(state.config.validateTexts);
@@ -3664,7 +4141,7 @@
         if (!(await auditAndPaceBeforeSubmit(q, `validation "${controlText(validateBtn)}"`))) return false;
         log(`Validation: "${controlText(validateBtn)}"`);
         if (!(await clickElement(validateBtn))) {
-          hardBlock(q.key, "Impossible de cliquer sur Valider apres une reponse pourtant verifiee.");
+          hardBlock(q.key, "Impossible de cliquer sur Valider après une réponse pourtant vérifiée.");
           return false;
         }
         const outcome = await waitForValidationOutcome(q);
@@ -3675,39 +4152,41 @@
           return await navigatePassivePage("Apres validation");
         }
         if (outcome === "changed") {
-          log("Validation confirmee: nouvelle page/question deja chargee; aucun clic Suivant additionnel.");
+          log("Validation confirmée: nouvelle page/question deja chargee; aucun clic Suivant additionnel.");
           return true;
         }
         if (outcome === "ready-next") {
           const next = findActionButton(state.config.nextTexts);
           if (next) {
-            log(`Validation confirmee, navigation via "${controlText(next)}".`);
+            log(`Validation confirmée, navigation via "${controlText(next)}".`);
             await clickElement(next);
             return true;
           }
         }
-        hardBlock(q.key, "Validation non confirmee dans le DOM; Suivant/Passer bloques.");
+        hardBlock(q.key, "Validation non confirmée dans le DOM; Suivant/Passer bloques.");
         return false;
       }
 
       // Certains exercices n'ont pas de bouton Valider: Suivant peut faire office de soumission.
-      // On ne l'autorise qu'apres verification dure de la reponse, jamais Passer.
+      // On ne l'autorisé qu'après vérification dure de la réponse, jamais Passer.
       const next = await waitForActionButton(state.config.nextTexts, 2500);
       if (next && state.agent.lastApplyVerified) {
         if (!(await auditAndPaceBeforeSubmit(q, `soumission "${controlText(next)}"`))) return false;
-        log(`Pas de Valider; reponse verifiee + audit OK, navigation controlee via "${controlText(next)}".`);
+        log(`Pas de Valider; réponse vérifiée + audit OK, navigation controlee via "${controlText(next)}".`);
         await clickElement(next);
         return true;
       }
 
-      hardBlock(q.key, "Reponse appliquee mais aucun mecanisme de validation/navigation fiable detecte.");
+      hardBlock(q.key, "Réponse appliquée mais aucun mécanisme de validation/navigation fiable détecté.");
       return false;
     } finally {
       state.agent.processing = false;
     }
   };
 
-  const waitForWakeOrTimeout = (ms) => new Promise((resolve) => {
+  const waitForWakeOrTimeout = (ms) => {
+    if (state.agent.manualResumePending) return Promise.resolve("manual");
+    return new Promise((resolve) => {
     let done = false;
     const timer = setTimeout(() => {
       if (done) return;
@@ -3722,7 +4201,8 @@
       state.agent.wakeResolver = null;
       resolve("mutation");
     };
-  });
+    });
+  };
 
   const matchesActionText = (value, texts) => {
     const t = normLoose(value);
@@ -3757,21 +4237,23 @@
     actionKind = "navigation"
   ) => {
     if (!state.config.agent.autoAnswer) return;
-    if (state.agent.manualNavigationTimer) clearTimeout(state.agent.manualNavigationTimer);
 
-    // Le listener est en capture: beforeFingerprint correspond encore a l'etat
-    // AVANT le clic manuel de l'utilisateur.
+    // v6.2 : armer la reprise SYNCHRONEMENT, dès le clic (listener en capture).
+    // Ce jeton sert aussi à casser les longues attentes de rythme en cours.
+    state.agent.manualResumeToken += 1;
+    state.agent.manualResumePending = true;
+    state.agent.manualResumeLabel = label || "action manuelle";
+    state.agent.manualResumeAt = Date.now();
+    state.agent.wakeResolver?.();
+
+    if (state.agent.manualNavigationTimer) clearTimeout(state.agent.manualNavigationTimer);
     state.agent.manualNavigationTimer = setTimeout(async () => {
       state.agent.manualNavigationTimer = null;
 
-      // Un clic manuel signifie que l'utilisateur a repris la main: lever un ancien
-      // blocage securite et supprimer tout resultat IA devenu obsolete.
+      // Lever immédiatement les anciens blocages/résultats devenus obsolètes.
       resetForNewManualPage();
 
       if (actionKind === "validate") {
-        // Valider/Confirmer/Soumettre peut afficher une correction SANS changer N/Total.
-        // On attend donc soit une mutation significative, soit l'apparition du feedback,
-        // puis on relance la boucle meme si la progression reste identique.
         const started = Date.now();
         let changed = false;
         while (Date.now() - started < 6500) {
@@ -3781,46 +4263,36 @@
             break;
           }
         }
-
         if (changed) {
-          log(`Validation manuelle detectee (${label}); nouvel etat DOM/correction detecte, reprise Auto.`);
-          await waitForStablePage(450, state.config.agent.pageSettleMaxMs);
+          log(`Validation manuelle détectée (${label}); nouvel état DOM/correction détecté, reprise Auto armée.`);
+          await waitForStablePage(350, state.config.agent.pageSettleMaxMs);
         } else {
-          // Meme sans preuve forte, ne jamais laisser Auto mort apres une validation
-          // manuelle: reveiller la boucle pour qu'elle re-evalue la page courante.
-          log(`Validation manuelle "${label}" detectee; reprise Auto forcee sur l'etat courant.`);
+          log(`Validation manuelle "${label}" détectée; reprise Auto forcée sur l'état courant.`);
         }
       } else {
-        // Suivant / Passer / Terminer doivent normalement changer la page.
         const changed = await waitForPageFingerprintChange(beforeFingerprint, 6500);
         if (changed) {
-          log(`Navigation manuelle detectee (${label}); nouvelle page chargee, reprise Auto.`);
-          await waitForStablePage(450, state.config.agent.pageSettleMaxMs);
+          log(`Navigation manuelle détectée (${label}); nouvelle page chargée, reprise Auto armée.`);
+          await waitForStablePage(350, state.config.agent.pageSettleMaxMs);
         } else {
-          log(`Action manuelle "${label}" detectee sans changement confirme; reprise Auto sur la page courante.`);
+          log(`Action manuelle "${label}" détectée sans changement confirmé; reprise Auto sur la page courante.`);
         }
       }
 
+      // Mettre aussi le panneau à jour immédiatement sur la nouvelle question.
+      try { renderPanel(detectQuestion()); } catch {}
       state.agent.wakeResolver?.();
 
+      // Si l'ancienne boucle est déjà terminée, redémarrer tout de suite. Sinon elle
+      // verra manualResumePending au prochain point de contrôle et continuera sans délai.
       if (!state.running) {
         run();
       } else {
-        // Garantie supplementaire: si l'ancienne boucle est en train de sortir apres
-        // un blocage, relancer des qu'elle est effectivement terminee.
-        let retries = 0;
-        const ensureResume = () => {
-          retries += 1;
-          if (!state.config.agent.autoAnswer) return;
-          if (!state.running) {
-            run();
-            return;
-          }
-          if (retries < 12) setTimeout(ensureResume, 500);
-        };
-        setTimeout(ensureResume, 500);
+        setTimeout(() => {
+          if (state.config.agent.autoAnswer && !state.running) run();
+        }, 300);
       }
-    }, 160);
+    }, 120);
   };
 
   const watchManualNavigation = () => {
@@ -3844,7 +4316,7 @@
       const kind = isValidate ? "validate" : "navigation";
       const fallbackLabel = isValidate ? "Valider" : isNext ? "Suivant/Terminer" : "Passer";
 
-      // Ne jamais empecher le clic manuel. Le script observe seulement son resultat
+      // Ne jamais empêcher le clic manuel. Le script observe seulement son résultat
       // puis reprend automatiquement tant que Auto = ON.
       resumeAutoAfterManualNavigation(label || fallbackLabel, beforeFingerprint, kind);
     }, true);
@@ -3863,55 +4335,76 @@
   };
 
   const run = async () => {
-    if (state.running) { log("Le script tourne deja."); return; }
+    if (state.running) { log("Le script tourne déjà."); return; }
     state.running = true;
     state.stopRequested = false;
     state.startedAt = Date.now();
     state.cycle = 0;
     ensureActivityPacing();
-    log("Demarrage v5.7 securise.");
+    log("Démarrage v6.3 sécurisé.");
 
     try {
       while (!state.stopRequested) {
+        // v6.2 : une action manuelle est une priorité absolue. Elle annule l'ancien
+        // contexte, lève un blocage éventuel et force une nouvelle détection immédiatement.
+        if (state.agent.manualResumePending) {
+          const label = state.agent.manualResumeLabel || "action manuelle";
+          state.agent.manualResumePending = false;
+          resetForNewManualPage();
+          await waitForStablePage(250, Math.min(2200, state.config.agent.pageSettleMaxMs));
+          try { renderPanel(detectQuestion()); } catch {}
+          log(`Reprise Auto exécutée après ${label}.`);
+        }
+
         state.cycle += 1;
         const before = detectQuestion().key;
         const processed = await processCurrentPage();
         if (state.stopRequested) break;
+
+        // L'action manuelle peut avoir eu lieu pendant processCurrentPage(), notamment
+        // pendant une attente de rythme : ne jamais laisser un ancien blocage gagner.
+        if (state.agent.manualResumePending) {
+          clearHardBlock(true);
+          continue;
+        }
+
         if (state.agent.blockReason) {
-          log("Automatisation arretee par securite. Corrige/manipule la question puis tape geUnblock(); gs().");
+          log("Automatisation arrêtée par sécurité. Corrige/manipule la question puis tape geUnblock(); gs().");
           break;
         }
 
         if (!processed) {
+          if (state.agent.manualResumePending) continue;
           const retryMs = state.agent.lastResult?.error ? state.config.agent.errorRetryMs : Math.min(5000, state.config.pageDelayMs);
-          log(`Traitement non termine. Nouvelle verification dans ${Math.round(retryMs / 1000)}s maximum.`);
+          log(`Traitement non terminé. Nouvelle vérification dans ${Math.round(retryMs / 1000)}s maximum.`);
           await waitForWakeOrTimeout(retryMs);
           continue;
         }
 
-        log(`Attente jusqu'a ${Math.round(state.config.pageDelayMs / 1000)}s avant le prochain traitement.`);
+        log(`Attente jusqu'à ${Math.round(state.config.pageDelayMs / 1000)}s avant le prochain traitement.`);
         await waitForWakeOrTimeout(state.config.pageDelayMs);
+        if (state.agent.manualResumePending) continue;
         const after = detectQuestion().key;
         if (after === before) await wait(500);
       }
     } finally {
       state.running = false;
-      log("Script arrete.");
+      log("Script arrêté.");
     }
   };
 
-  const stop = () => { state.stopRequested = true; state.agent.wakeResolver?.(); log("Arret demande."); };
+  const stop = () => { state.stopRequested = true; state.agent.wakeResolver?.(); log("Arrêt demandé."); };
   const toggleAutoAnswer = () => { state.config.agent.autoAnswer = !state.config.agent.autoAnswer; renderPanel(); return state.config.agent.autoAnswer; };
   const setDelaySeconds = (seconds) => {
     const n = Number(seconds);
     if (!Number.isFinite(n) || n < 0) throw new Error("geDelay(seconds) attend un nombre >= 0.");
     state.config.pageDelayMs = Math.round(n * 1000);
-    log(`Delai defini a ${n}s.`);
+    log(`Délai défini a ${n}s.`);
     return state.config.pageDelayMs;
   };
-  const setActivityPacing = (minMinutes = 10, maxMinutes = 30) => {
+  const setActivityPacing = (minMinutes = 30, maxMinutes = 30) => {
     const min = Number(minMinutes), max = Number(maxMinutes);
-    if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max < min) throw new Error("geActivityPace(min,max) attend ex. 30,40.");
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max < min) throw new Error("geActivityPace(min,max) attend par exemple 30,30.");
     state.config.activityPacing.enabled = true;
     state.config.activityPacing.minMinutes = min;
     state.config.activityPacing.maxMinutes = max;
@@ -3921,6 +4414,25 @@
     return { minMinutes:min, maxMinutes:max };
   };
   const disableActivityPacing = () => { state.config.activityPacing.enabled = false; renderPanel(); return false; };
+  const setProvider = (provider = "auto") => {
+    const allowed = ["auto", "groq", "openai", "gemini", "anthropic", "mistral", "openrouter"];
+    const value = String(provider || "auto").toLowerCase();
+    if (!allowed.includes(value)) throw new Error(`Fournisseur inconnu: ${value}. Valeurs: ${allowed.join(", ")}`);
+    state.config.agent.provider = value;
+    if (value === "auto") state.config.agent.model = "auto";
+    state.agent.lastProvider = null; state.agent.lastModel = null; state.agent.providerHistory = [];
+    renderPanel();
+    return value;
+  };
+  const listProviders = async () => {
+    const healthUrl = state.config.agent.endpoint.replace(/\/api\/chat.*$/i, "/health");
+    const response = await fetch(healthUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Health multi-IA HTTP ${response.status}`);
+    const data = await response.json();
+    console.table((data.providers || []).map((p) => ({ fournisseur:p.name, "modèle":p.model, actif:p.configured })));
+    return data;
+  };
+  const togglePanel = () => { state.agent.panelCollapsed = !state.agent.panelCollapsed; renderPanel(); return state.agent.panelCollapsed; };
   const setModel = (model) => { state.config.agent.model = String(model); renderPanel(); return state.config.agent.model; };
   const setEndpoint = (url) => { state.config.agent.endpoint = String(url); renderPanel(); return state.config.agent.endpoint; };
 
@@ -3994,37 +4506,47 @@
   };
 
   const help = () => console.log(`
-Global Exam Assistant v5.7 — Groq
+Global Exam Assistant v6.3 — Multi-IA
 
-Commandes:
-- geStart() / gs()        : demarrer
-- geStop() / gx()         : arreter
-- geProcessPage()         : traiter uniquement la page courante
-- geAnalyze() / ga()      : analyser la question courante
-- geAnswer() / gans()     : appliquer la reponse courante
-- geDebugQuestion()       : afficher le type et les donnees detectees
-- geDebugOrdering()       : diagnostiquer consigne/cible/items + handles DnD ordering
-- geDebugPageState()      : afficher question/correction/contenu
-- geDebugDrag()           : afficher les elements/handlers du drag-drop
-- geUnblock()             : lever un blocage securite apres verification manuelle
-- clic manuel Valider/Confirmer/Soumettre/Suivant/Passer/Terminer en Auto : reprise automatique
-- geAuto()                : ON/OFF auto-reponse
-- geDelay(secondes)       : delai maximum entre traitements
-- geActivityPace(30,40)   : viser 30 a 40 min pour toute l'activite
-- geActivityPaceOff()     : desactiver le rythme d'activite
-- geSetModel("...")      : changer de modele Groq
-- geSetEndpoint("...")   : changer l'endpoint
+Commandes :
+- geStart() / gs()          : démarrer / reprendre
+- geStop() / gx()           : arrêter
+- geProcessPage()           : traiter uniquement la page courante
+- geAnalyze() / ga()        : analyser la question courante
+- geAnswer() / gans()       : appliquer la réponse courante
+- gePanel()                 : réduire / agrandir la fenêtre de l'assistant
+- geSetProvider("auto")     : fournisseur automatique multi-IA
+- geSetProvider("groq")     : forcer Groq (idem openai/gemini/anthropic/mistral/openrouter)
+- geProviders()             : afficher les fournisseurs configurés dans le proxy
+- geSetModel("...")         : forcer un modèle pour le fournisseur choisi
+- geDebugQuestion()         : afficher le type et les données détectées
+- geDebugOrdering()         : diagnostiquer l'ordering
+- geDebugPageState()        : afficher question/correction/contenu
+- geDebugDrag()             : diagnostiquer les placements
+- geUnblock()               : lever un blocage de sécurité après vérification manuelle
+- geAuto()                  : ON/OFF auto-réponse
+- geDelay(secondes)         : délai maximum entre traitements
+- geActivityPace(30,30)     : viser 30 minutes pour toute l'activité
+- geActivityPaceOff()       : désactiver le rythme d'activité
+- geSetEndpoint("...")      : changer l'endpoint local
 
-Types geres:
+Comportement :
+- les exercices complexes sont vérifiés par plusieurs fournisseurs si plusieurs clés sont configurées ;
+- toute validation automatique passe par l'audit de sécurité DOM ;
+- un ordering partiellement rempli est remis à zéro avant d'être recalculé ;
+- un clic manuel sur Valider / Suivant / Passer / Terminer réveille automatiquement le script ;
+- l'objectif de durée est fixé à 30 minutes par activité par défaut.
+
+Types gérés :
 - single-choice / button-choice
 - multi-choice
 - matrix
 - text / multi-text
 - select / multi-select / combobox
-- drag-drop
+- drag-drop par clic
 - ordering
 - matching
-- pages de correction/resultat (aucune IA, navigation seulement)
+- pages de correction/résultat (aucune IA, navigation seulement)
 - pages sans question (aucune IA, navigation seulement)
   `.trim());
 
@@ -4033,7 +4555,7 @@ Types geres:
     if (state.agent.blockReason) {
       clearHardBlock(true);
       state.agent.lastResult = null;
-      log("Reprise explicite: ancien blocage efface, nouvelle analyse autorisee.");
+      log("Reprise explicite : ancien blocage effacé, nouvelle analyse autorisée.");
     }
     return run();
   };
@@ -4056,6 +4578,20 @@ Types geres:
   window.geDebugPageState = debugPageState;
   window.geDebugDrag = debugDrag;
   window.geDebugExistingAnswer = debugExistingAnswer;
+  window.geDebugButtonChoice = () => {
+    const q = detectQuestion();
+    const expected = q?.choices?.[0]?.text || "";
+    const candidates = expected ? buttonChoiceLiveCandidates(q, expected) : [];
+    console.table(candidates.map((el, i) => ({
+      i,
+      tag: el.tagName,
+      role: el.getAttribute?.("role") || "",
+      text: buttonChoiceTextWithoutAssistant(el),
+      className: String(el.className || "").slice(0, 100),
+      reactHandlers: reactHandlerNames(el).join(", "),
+    })));
+    return { q, expected, singleFill: isSingleChoiceFillContext(q?.root), candidates };
+  };
   window.geDebugOrderingCount = () => {
     const instruction = findOrderingInstructionElement(document.body);
     const target = findOrderingTarget(document.body, instruction);
@@ -4065,10 +4601,14 @@ Types geres:
     return st;
   };
   window.geUnblock = clearHardBlock;
+  window.geVersion = () => ASSISTANT_VERSION;
   window.geAuto = toggleAutoAnswer;
   window.geDelay = setDelaySeconds;
   window.geActivityPace = setActivityPacing;
   window.geActivityPaceOff = disableActivityPacing;
+  window.geSetProvider = setProvider;
+  window.geProviders = listProviders;
+  window.gePanel = togglePanel;
   window.geSetModel = setModel;
   window.geSetEndpoint = setEndpoint;
   window.geHelp = help;
