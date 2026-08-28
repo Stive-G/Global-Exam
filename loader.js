@@ -146,17 +146,20 @@
   installFeedbackSurveyGuard();
 
   const cacheBust = `${expectedVersion}-${Date.now()}`;
-  const [assistantResponse, patchResponse] = await Promise.all([
+  const [assistantResponse, patchResponse, contentLoopHotfixResponse] = await Promise.all([
     fetch(`http://localhost:3000/assistant.js?v=${cacheBust}`, { cache: "no-store" }),
     fetch(`http://localhost:3000/runtime-patch-v6.4.js?v=${cacheBust}`, { cache: "no-store" }),
+    fetch(`http://localhost:3000/runtime-hotfix-v6.4-content-loop.js?v=${cacheBust}`, { cache: "no-store" }),
   ]);
 
   if (!assistantResponse.ok) throw new Error(`Assistant HTTP ${assistantResponse.status}`);
   if (!patchResponse.ok) throw new Error(`Patch v6.4 HTTP ${patchResponse.status}`);
+  if (!contentLoopHotfixResponse.ok) throw new Error(`Hotfix boucle contenu HTTP ${contentLoopHotfixResponse.status}`);
 
-  const [baseCode, patchCode] = await Promise.all([
+  const [baseCode, patchCode, contentLoopHotfixCode] = await Promise.all([
     assistantResponse.text(),
     patchResponse.text(),
+    contentLoopHotfixResponse.text(),
   ]);
 
   if (!baseCode.includes(`ASSISTANT_VERSION = "${baseVersion}"`)) {
@@ -171,7 +174,13 @@
     throw new Error("[Loader Global Exam] Le patch v6.4 n'a pas été initialisé.");
   }
 
-  const code = window.__applyGlobalExamV64Patch(baseCode);
+  (0, eval)(contentLoopHotfixCode);
+  if (typeof window.__applyGlobalExamV64ContentLoopFix !== "function") {
+    throw new Error("[Loader Global Exam] Le hotfix anti-boucle n'a pas été initialisé.");
+  }
+
+  let code = window.__applyGlobalExamV64Patch(baseCode);
+  code = window.__applyGlobalExamV64ContentLoopFix(code);
   (0, eval)(code);
 
   const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "inconnue";
@@ -179,5 +188,5 @@
     throw new Error(`[Loader Global Exam] Version chargée ${loaded}, v${expectedVersion} attendue.`);
   }
 
-  console.log(`[Loader Global Exam] Version chargée : ${loaded}`);
+  console.log(`[Loader Global Exam] Version chargée : ${loaded} + hotfix anti-boucle contenu`);
 })();
