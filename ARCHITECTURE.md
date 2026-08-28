@@ -1,4 +1,4 @@
-# Architecture et fonctionnement — Global Exam Assistant v6.3
+# Architecture et fonctionnement — Global Exam Assistant v6.4
 
 Ce document explique comment les fichiers du projet travaillent ensemble et comment une question passe de la page Global Exam à une réponse validée.
 
@@ -9,7 +9,9 @@ Global Exam dans le navigateur
         |
         | Détection DOM / extraction question
         v
-global-exam-assistant-v6.3.js
+global-exam-assistant-v6.3.js (base)
+        |
+        | runtime-patch-v6.4.js
         |
         | POST http://localhost:3000/api/chat
         v
@@ -108,7 +110,7 @@ Il peut contenir une ou plusieurs clés. Le proxy ignore les fournisseurs dont l
 
 Bootstrap minimal pour DevTools.
 
-Il télécharge la version du script servie par Nginx et l'évalue dans le contexte de la page Global Exam.
+Il télécharge la base du script servie par Nginx, charge `runtime-patch-v6.4.js`, applique le patch en mémoire puis évalue la version finale dans le contexte de la page Global Exam.
 
 ## Cycle d'une question
 
@@ -339,7 +341,6 @@ Docker/.env -> clés API
 - Si un contenu audio n'est ni accessible ni transcrit dans le DOM, l'IA ne dispose pas magiquement de cet audio.
 - Les modèles et tarifs des fournisseurs changent : les noms de modèles restent configurables dans `.env`.
 
-
 ## v6.3 — Vérification robuste des `button-choice`
 
 Un `button-choice` n'est plus validé seulement parce que la classe CSS du bouton a changé.
@@ -354,3 +355,17 @@ Pour les exercices où un clic remplit un trou, l'assistant prend un snapshot av
 La recherche de la puce est refaite dans le DOM avant chaque tentative afin de supporter les re-renders React.
 
 L'audit pré-validation considère maintenant aussi le cas d'un **seul trou** pour les consignes `Fill in the blank...`. Une zone vide suffit alors à bloquer `Valider`.
+
+## Compatibilité runtime v6.4
+
+La v6.4 conserve `global-exam-assistant-v6.3.js` comme source de base et applique un patch source avant `eval` via `loader.js`. Cette stratégie évite de dupliquer un fichier de plus de 200 Ko tout en gardant un correctif versionné et vérifiable.
+
+`runtime-patch-v6.4.js` effectue des remplacements stricts : si un bloc attendu de la base v6.3 est absent, le chargement échoue au lieu d’exécuter un assistant partiellement patché.
+
+Le patch corrige les différences de DOM observées sur certains PC :
+
+- clés de traduction internes (`feedback_form.*`) exclues des réponses ;
+- candidats d’ordering restreints à la banque locale ;
+- comptage des fragments sélectionnés limité aux vraies puces/boutons ;
+- contrôle de sécurité avant chaque clic d’ordering ;
+- commande `geDebugOrderingCandidates()`.
