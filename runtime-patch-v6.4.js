@@ -70,7 +70,8 @@
 
     return dedupeByText(
       candidates.map((el) => ({ text: textOf(el).trim(), element: el })).filter((x) => norm(x.text))
-    ).map((x, index) => ({ index, ...x }));`,
+    ).map((x, index) => ({ index, ...x }));
+  };`,
 `    // Préférer les plus petits descendants cliquables lorsqu'un wrapper et son bouton sont tous deux remontés.
     candidates.sort((a, b) => {
       const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
@@ -98,7 +99,8 @@
       candidates
         .map((el) => ({ text: textOf(el).trim(), element: el }))
         .filter((x) => norm(x.text) && !looksLikeInternalTranslationKey(x.text))
-    ).map((x, index) => ({ index, ...x }));`
+    ).map((x, index) => ({ index, ...x }));
+  };`
     );
 
     code = replaceOnce(
@@ -183,6 +185,206 @@
   };
 
   window.geDebugButtonChoice = () => {`
+    );
+
+    // "Passer" indique que la question n'est pas soumise. Suivant ne doit jamais
+    // servir de soumission implicite : il faut Valider/Confirmer/Soumettre ou un état Validé/Validée.
+    code = replaceOnce(
+      code,
+      "helpers soumission confirmée",
+`  const waitForActionButton = async (texts, timeoutMs = state.config.agent.passiveNavigationWaitMs) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs && !state.stopRequested) {
+      const btn = findActionButton(texts);
+      if (btn) return btn;
+      await wait(200);
+    }
+    return null;
+  };
+
+  const navigatePassivePage = async (label) => {`,
+`  const waitForActionButton = async (texts, timeoutMs = state.config.agent.passiveNavigationWaitMs) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs && !state.stopRequested) {
+      const btn = findActionButton(texts);
+      if (btn) return btn;
+      await wait(200);
+    }
+    return null;
+  };
+
+  const submittedStateTexts = [
+    "validee", "valide", "validated",
+    "soumis", "soumise", "submitted",
+    "reponse validee", "answer validated"
+  ];
+
+  const findSubmittedStateControl = () => {
+    const candidates = visibleControls(
+      "button,a,[role='button'],input[type='button'],input[type='submit'],[class*='status'],[class*='badge']",
+      document
+    ).filter((el) => !isAssistantElement(el));
+
+    return candidates.find((el) => {
+      const t = normLoose(controlText(el));
+      if (!t || t.length > 80) return false;
+      return submittedStateTexts.some((wanted) =>
+        t === wanted || t.startsWith(\`\${wanted} \`) || t.endsWith(\` \${wanted}\`)
+      );
+    }) || null;
+  };
+
+  const hasSubmittedState = () => !!findSubmittedStateControl() || isFeedbackPage();
+
+  const waitForValidateOrSubmitted = async (timeoutMs = 3500) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs && !state.stopRequested) {
+      const validate = findActionButton(state.config.validateTexts);
+      const submitted = findSubmittedStateControl();
+      if (validate || submitted || isFeedbackPage()) {
+        return {
+          validate,
+          submitted: submitted || (isFeedbackPage() ? true : null),
+          next: findActionButton(state.config.nextTexts),
+          pass: findActionButton(state.config.passTexts),
+        };
+      }
+      await wait(200);
+    }
+    return {
+      validate: findActionButton(state.config.validateTexts),
+      submitted: findSubmittedStateControl(),
+      next: findActionButton(state.config.nextTexts),
+      pass: findActionButton(state.config.passTexts),
+    };
+  };
+
+  const navigatePassivePage = async (label) => {`
+    );
+
+    code = replaceOnce(
+      code,
+      "confirmation validation exige état soumis",
+`      const validate = findActionButton(state.config.validateTexts);
+      const next = findActionButton(state.config.nextTexts);
+      if (!validate && next && state.agent.lastApplyVerified) return "ready-next";`,
+`      const validate = findActionButton(state.config.validateTexts);
+      const next = findActionButton(state.config.nextTexts);
+      const submitted = findSubmittedStateControl();
+
+      if (!validate && submitted && next && state.agent.lastApplyVerified) return "ready-next";`
+    );
+
+    code = replaceOnce(
+      code,
+      "answered sans valider ne soumet pas via suivant",
+`        const next = findActionButton(state.config.nextTexts);
+        if (next) {
+          if (!(await auditAndPaceBeforeSubmit(q, \`soumission "\${controlText(next)}"\`))) return false;
+          log(\`Réponse déjà présente et aucun Valider: navigation via "\${controlText(next)}".\`);
+          await clickElement(next);
+          return true;
+        }
+        return false;`,
+`        const submitted = findSubmittedStateControl();
+        const next = findActionButton(state.config.nextTexts);
+        if (submitted && next) {
+          log(\`Réponse déjà soumise confirmée par "\${controlText(submitted)}"; navigation via "\${controlText(next)}".\`);
+          await clickElement(next);
+          return true;
+        }
+
+        const pass = findActionButton(state.config.passTexts);
+        if (pass) {
+          log(\`"\${controlText(pass)}" est visible: la réponse n'est pas encore soumise. Suivant/Passer bloqués; attente de Valider puis de l'état Validée.\`);
+        } else {
+          log("Réponse présente mais soumission non confirmée: attente de Valider/Validée.");
+        }
+        return false;`
+    );
+
+    code = replaceOnce(
+      code,
+      "existing sans valider ne soumet pas via suivant",
+`        const nextExisting = findActionButton(state.config.nextTexts);
+        if (nextExisting) {
+          if (!(await auditAndPaceBeforeSubmit(q, \`soumission "\${controlText(nextExisting)}"\`))) return false;
+          log(\`Réponse existante sans bouton Valider: navigation via "\${controlText(nextExisting)}".\`);
+          await clickElement(nextExisting);
+          return true;
+        }
+        return false;`,
+`        const submittedExisting = findSubmittedStateControl();
+        const nextExisting = findActionButton(state.config.nextTexts);
+        if (submittedExisting && nextExisting) {
+          log(\`Réponse existante déjà soumise confirmée par "\${controlText(submittedExisting)}"; navigation via "\${controlText(nextExisting)}".\`);
+          await clickElement(nextExisting);
+          return true;
+        }
+
+        const passExisting = findActionButton(state.config.passTexts);
+        if (passExisting) {
+          log(\`"\${controlText(passExisting)}" est visible: réponse existante non soumise. Aucun passage automatique; attente de Valider/Validée.\`);
+        } else {
+          log("Réponse existante détectée mais soumission non confirmée: attente de Valider/Validée.");
+        }
+        return false;`
+    );
+
+    code = replaceOnce(
+      code,
+      "plus de suivant comme soumission implicite",
+`      // Certains exercices n'ont pas de bouton Valider: Suivant peut faire office de soumission.
+      // On ne l'autorisé qu'après vérification dure de la réponse, jamais Passer.
+      const next = await waitForActionButton(state.config.nextTexts, 2500);
+      if (next && state.agent.lastApplyVerified) {
+        if (!(await auditAndPaceBeforeSubmit(q, \`soumission "\${controlText(next)}"\`))) return false;
+        log(\`Pas de Valider; réponse vérifiée + audit OK, navigation controlee via "\${controlText(next)}".\`);
+        await clickElement(next);
+        return true;
+      }
+
+      hardBlock(q.key, "Réponse appliquée mais aucun mécanisme de validation/navigation fiable détecté.");
+      return false;`,
+`      // Ne jamais utiliser Suivant/Passer comme soumission implicite.
+      // Attendre Valider, ou l'état Validé/Validée qui prouve que Global Exam a déjà enregistré la réponse.
+      const submissionState = await waitForValidateOrSubmitted(3500);
+
+      if (submissionState.validate) {
+        if (!(await auditAndPaceBeforeSubmit(q, \`validation "\${controlText(submissionState.validate)}"\`))) return false;
+        log(\`Validation tardive apparue: "\${controlText(submissionState.validate)}".\`);
+        if (!(await clickElement(submissionState.validate))) {
+          hardBlock(q.key, "Impossible de cliquer sur Valider après apparition tardive du bouton.");
+          return false;
+        }
+
+        const outcome = await waitForValidationOutcome(q);
+        if (outcome === "feedback") {
+          state.agent.lastResult = null;
+          clearHighlights();
+          renderPanel({ type: "feedback", prompt: "", key: "feedback" });
+          return await navigatePassivePage("Après validation");
+        }
+        if (outcome === "changed") return true;
+        if (outcome === "ready-next") return await nextIfPresent();
+
+        hardBlock(q.key, "Valider a été cliqué mais la soumission n'a pas été confirmée par Validée/correction.");
+        return false;
+      }
+
+      if (submissionState.submitted && submissionState.next) {
+        log(\`Soumission confirmée par l'état "\${controlText(submissionState.submitted) || "Validée"}"; navigation via "\${controlText(submissionState.next)}".\`);
+        await clickElement(submissionState.next);
+        return true;
+      }
+
+      if (submissionState.pass) {
+        log(\`"\${controlText(submissionState.pass)}" est visible: la question n'est PAS soumise. Aucun clic automatique; attente de Valider/Validée.\`);
+        return false;
+      }
+
+      log("Réponse appliquée et vérifiée, mais soumission encore non confirmée. Attente de Valider/Validée; aucune navigation.");
+      return false;`
     );
 
     return code;
