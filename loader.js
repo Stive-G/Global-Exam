@@ -12,6 +12,139 @@
     return;
   }
 
+  // Global Exam peut afficher un formulaire de feedback de fin d'activité.
+  // Ce popup appartient au site, pas à l'assistant. Sur certains navigateurs,
+  // ses traductions apparaissent sous forme de clés "feedback_form.*".
+  // Le guard le ferme immédiatement pour éviter qu'il soit analysé comme une question.
+  const installFeedbackSurveyGuard = () => {
+    if (window.__GLOBAL_EXAM_FEEDBACK_SURVEY_GUARD) return;
+
+    const isVisible = (el) => {
+      if (!el || !el.isConnected) return false;
+      const r = el.getBoundingClientRect?.();
+      const s = getComputedStyle(el);
+      return !!r && r.width > 0 && r.height > 0 &&
+        s.display !== "none" && s.visibility !== "hidden" &&
+        Number(s.opacity || 1) > 0;
+    };
+
+    const looksLikeSurvey = () => {
+      const text = String(document.body?.innerText || document.body?.textContent || "");
+      return /feedback_form\./i.test(text) &&
+        /(need_question|categories|urgent|bug|typo|available_to_discuss)/i.test(text);
+    };
+
+    const findSurveyRoot = () => {
+      const nodes = [...document.querySelectorAll("body *")]
+        .filter((el) => isVisible(el))
+        .filter((el) => /feedback_form\./i.test(String(el.innerText || el.textContent || "")));
+
+      for (const node of nodes) {
+        const explicit = node.closest?.(
+          "[role='dialog'],[aria-modal='true'],[class*='modal'],[class*='dialog'],[class*='drawer'],[class*='sheet'],[class*='overlay']"
+        );
+        if (explicit && isVisible(explicit)) return explicit;
+      }
+
+      for (const node of nodes) {
+        let cur = node;
+        for (let depth = 0; cur && depth < 7; depth++, cur = cur.parentElement) {
+          const r = cur.getBoundingClientRect?.();
+          if (!r) continue;
+          if (r.width >= Math.min(500, window.innerWidth * 0.65) &&
+              r.height >= Math.min(300, window.innerHeight * 0.45)) {
+            return cur;
+          }
+        }
+      }
+
+      return null;
+    };
+
+    const findCloseButton = (root) => {
+      if (!root) return null;
+      const candidates = [...root.querySelectorAll(
+        "button,[role='button'],a,[tabindex]"
+      )].filter((el) => isVisible(el) && !el.closest?.("#global-exam-assistant"));
+
+      const direct = candidates.find((el) => {
+        const label = [
+          el.getAttribute?.("aria-label"),
+          el.getAttribute?.("title"),
+          el.innerText,
+          el.textContent
+        ].filter(Boolean).join(" ").trim().toLowerCase();
+
+        return /^(x|×|✕|✖)$/.test(label) ||
+          /\b(close|fermer|dismiss|quitter)\b/i.test(label);
+      });
+      if (direct) return direct;
+
+      const rr = root.getBoundingClientRect();
+      return candidates
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          return r.width <= 90 && r.height <= 90 &&
+            cx >= rr.right - 140 &&
+            cy <= rr.top + 140;
+        })
+        .sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return br.left - ar.left || ar.top - br.top;
+        })[0] || null;
+    };
+
+    let busy = false;
+    let lastLogAt = 0;
+
+    const tryCloseSurvey = async () => {
+      if (busy || !looksLikeSurvey()) return false;
+      busy = true;
+      try {
+        const root = findSurveyRoot();
+        const close = findCloseButton(root);
+        if (!close) {
+          const now = Date.now();
+          if (now - lastLogAt > 5000) {
+            lastLogAt = now;
+            console.warn("[Global Exam Guard] Popup feedback détecté mais bouton fermer introuvable.");
+          }
+          return false;
+        }
+
+        console.log("[Global Exam Guard] Popup feedback Global Exam détecté : fermeture automatique.");
+        close.click();
+        return true;
+      } finally {
+        setTimeout(() => { busy = false; }, 250);
+      }
+    };
+
+    let timer = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(tryCloseSurvey, 40);
+    });
+
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+
+    window.__GLOBAL_EXAM_FEEDBACK_SURVEY_GUARD = {
+      observer,
+      tryClose: tryCloseSurvey
+    };
+
+    tryCloseSurvey();
+  };
+
+  installFeedbackSurveyGuard();
+
   const cacheBust = `${expectedVersion}-${Date.now()}`;
   const [assistantResponse, patchResponse] = await Promise.all([
     fetch(`http://localhost:3000/assistant.js?v=${cacheBust}`, { cache: "no-store" }),
