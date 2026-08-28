@@ -2,12 +2,14 @@
 (async () => {
   const expectedVersion = "6.4";
   const baseVersion = "6.3";
+  const expectedManualHotfix = "6.4-content-loop-manual-flow-v3";
+  const expectedContextPatch = "6.4-context-v1";
 
   if (window.__globalExamPager) {
     const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
     console.warn(
       `[Loader Global Exam] Une version ${loaded} est déjà chargée. ` +
-      `Fais Ctrl+R puis relance ce Snippet pour charger la v${expectedVersion}.`
+      `Fais Ctrl+R puis relance ce Snippet pour charger la version actuelle.`
     );
     return;
   }
@@ -15,7 +17,6 @@
   // Global Exam peut afficher un formulaire de feedback de fin d'activité.
   // Ce popup appartient au site, pas à l'assistant. Sur certains navigateurs,
   // ses traductions apparaissent sous forme de clés "feedback_form.*".
-  // Le guard le ferme immédiatement pour éviter qu'il soit analysé comme une question.
   const installFeedbackSurveyGuard = () => {
     if (window.__GLOBAL_EXAM_FEEDBACK_SURVEY_GUARD) return;
 
@@ -146,20 +147,23 @@
   installFeedbackSurveyGuard();
 
   const cacheBust = `${expectedVersion}-${Date.now()}`;
-  const [assistantResponse, patchResponse, contentLoopHotfixResponse] = await Promise.all([
+  const [assistantResponse, patchResponse, manualHotfixResponse, contextPatchResponse] = await Promise.all([
     fetch(`http://localhost:3000/assistant.js?v=${cacheBust}`, { cache: "no-store" }),
     fetch(`http://localhost:3000/runtime-patch-v6.4.js?v=${cacheBust}`, { cache: "no-store" }),
     fetch(`http://localhost:3000/runtime-hotfix-v6.4-content-loop.js?v=${cacheBust}`, { cache: "no-store" }),
+    fetch(`http://localhost:3000/runtime-context-v6.4.js?v=${cacheBust}`, { cache: "no-store" }),
   ]);
 
   if (!assistantResponse.ok) throw new Error(`Assistant HTTP ${assistantResponse.status}`);
   if (!patchResponse.ok) throw new Error(`Patch v6.4 HTTP ${patchResponse.status}`);
-  if (!contentLoopHotfixResponse.ok) throw new Error(`Hotfix boucle contenu HTTP ${contentLoopHotfixResponse.status}`);
+  if (!manualHotfixResponse.ok) throw new Error(`Hotfix navigation manuelle HTTP ${manualHotfixResponse.status}`);
+  if (!contextPatchResponse.ok) throw new Error(`Patch contexte activité HTTP ${contextPatchResponse.status}`);
 
-  const [baseCode, patchCode, contentLoopHotfixCode] = await Promise.all([
+  const [baseCode, patchCode, manualHotfixCode, contextPatchCode] = await Promise.all([
     assistantResponse.text(),
     patchResponse.text(),
-    contentLoopHotfixResponse.text(),
+    manualHotfixResponse.text(),
+    contextPatchResponse.text(),
   ]);
 
   if (!baseCode.includes(`ASSISTANT_VERSION = "${baseVersion}"`)) {
@@ -169,18 +173,40 @@
     );
   }
 
+  // Refuser explicitement un ancien hotfix : cela évite de croire qu'une correction
+  // est active alors que Docker sert encore la logique précédente.
+  if (!manualHotfixCode.includes(`HOTFIX_VERSION = "${expectedManualHotfix}"`)) {
+    throw new Error(
+      `[Loader Global Exam] Hotfix manuel obsolète. Attendu: ${expectedManualHotfix}. ` +
+      `Fais git pull puis redémarre Docker.`
+    );
+  }
+
+  if (!contextPatchCode.includes(`CONTEXT_PATCH_VERSION = "${expectedContextPatch}"`)) {
+    throw new Error(
+      `[Loader Global Exam] Patch contexte obsolète ou absent. Attendu: ${expectedContextPatch}. ` +
+      `Fais git pull puis redémarre Docker.`
+    );
+  }
+
   (0, eval)(patchCode);
   if (typeof window.__applyGlobalExamV64Patch !== "function") {
     throw new Error("[Loader Global Exam] Le patch v6.4 n'a pas été initialisé.");
   }
 
-  (0, eval)(contentLoopHotfixCode);
+  (0, eval)(manualHotfixCode);
   if (typeof window.__applyGlobalExamV64ContentLoopFix !== "function") {
-    throw new Error("[Loader Global Exam] Le hotfix anti-boucle n'a pas été initialisé.");
+    throw new Error("[Loader Global Exam] Le hotfix navigation/contenu n'a pas été initialisé.");
+  }
+
+  (0, eval)(contextPatchCode);
+  if (typeof window.__applyGlobalExamV64ContextPatch !== "function") {
+    throw new Error("[Loader Global Exam] Le patch contexte activité n'a pas été initialisé.");
   }
 
   let code = window.__applyGlobalExamV64Patch(baseCode);
   code = window.__applyGlobalExamV64ContentLoopFix(code);
+  code = window.__applyGlobalExamV64ContextPatch(code);
   (0, eval)(code);
 
   const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "inconnue";
@@ -188,5 +214,15 @@
     throw new Error(`[Loader Global Exam] Version chargée ${loaded}, v${expectedVersion} attendue.`);
   }
 
-  console.log(`[Loader Global Exam] Version chargée : ${loaded} + hotfix anti-boucle contenu`);
+  window.geRuntimeVersions = () => ({
+    assistant: loaded,
+    base: baseVersion,
+    manualFlow: expectedManualHotfix,
+    context: expectedContextPatch,
+  });
+
+  console.log(
+    `[Loader Global Exam] Chargé : assistant v${loaded} | ` +
+    `${expectedManualHotfix} | ${expectedContextPatch}`
+  );
 })();
