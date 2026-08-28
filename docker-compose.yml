@@ -36,3 +36,7 @@ services:
         source: ./runtime-patch-v6.4.js
         target: /usr/share/nginx/html/runtime-patch-v6.4.js
         read_only: true
+      - type: bind
+        source: ./runtime-hotfix-v6.4-content-loop.js
+        target: /usr/share/nginx/html/runtime-hotfix-v6.4-content-loop.js
+        read_only: true
