@@ -1,5 +1,5 @@
 (() => {
-  const HOTFIX_VERSION = "6.4-content-loop";
+  const HOTFIX_VERSION = "6.4-content-loop-manual-hold";
 
   const replaceOnce = (source, label, before, after) => {
     if (!source.includes(before)) {
@@ -86,15 +86,110 @@
       "  const detectQuestion = () => {\n    if (isFeedbackPage()) return { type: \"feedback\", root: findQuestionRoot(), prompt: \"\", key: \"feedback\" };\n\n    if (isPassiveZeroProgressContentPage()) {\n      return { type: \"none\", root: findQuestionRoot(), prompt: \"\", key: \"content::\" + pageIdentity() };\n    }\n"
     );
 
-    // 3) Sur une page passive, Suivant est autorisé. Passer ne l'est que si la réponse est déjà soumise/corrigée.
+    // 3) État spécifique : si l'utilisateur clique lui-même sur Valider pour bypasser
+    // l'attente de rythme, AUCUNE navigation automatique Suivant/Passer n'est autorisée
+    // tant qu'il n'a pas lui-même navigué ou qu'une vraie nouvelle question n'est pas détectée.
+    code = replaceOnce(
+      code,
+      "état retenue après validation manuelle",
+      "      manualResumeAt: null,\n      panelCollapsed: false,",
+      "      manualResumeAt: null,\n      manualValidationHold: false,\n      manualValidationHoldProgress: null,\n      manualValidationHoldAt: null,\n      panelCollapsed: false,"
+    );
+
+    // 4) Garde universelle : tous les clics automatiques passent par clickElement().
+    // Cela protège aussi les chemins qui cliquent directement sur Suivant sans passer
+    // par navigatePassivePage().
+    code = replaceOnce(
+      code,
+      "garde clic navigation après validation manuelle",
+      "  const clickElement = async (el) => {\n    if (!el || !isVisible(el) || !isEnabled(el)) return false;\n    el.scrollIntoView?.({ block: \"center\", inline: \"center\" });",
+      [
+        "  const clickElement = async (el) => {",
+        "    if (!el || !isVisible(el) || !isEnabled(el)) return false;",
+        "",
+        "    const clickLabel = controlText(el);",
+        "    const clickLoose = normLoose(clickLabel);",
+        "    const automaticNavigationTexts = [...state.config.nextTexts, ...state.config.passTexts].map(normLoose);",
+        "    const isAutomaticNavigation = automaticNavigationTexts.some((wanted) =>",
+        "      clickLoose === wanted || clickLoose.startsWith(wanted + ' ')",
+        "    );",
+        "",
+        "    if (state.agent.manualValidationHold && isAutomaticNavigation) {",
+        "      const heldProgress = state.agent.manualValidationHoldProgress;",
+        "      const currentProgress = currentProgressMarker();",
+        "      const genuinelyMoved = !!heldProgress && !!currentProgress &&",
+        "        currentProgress !== heldProgress && !isFeedbackPage();",
+        "",
+        "      if (!genuinelyMoved) {",
+        "        log('Navigation automatique \"' + (clickLabel || 'Suivant/Passer') + '\" bloquée : tu as validé manuellement. Clique toi-même sur Suivant/Passer pour continuer.');",
+        "        return false;",
+        "      }",
+        "",
+        "      state.agent.manualValidationHold = false;",
+        "      state.agent.manualValidationHoldProgress = null;",
+        "      state.agent.manualValidationHoldAt = null;",
+        "      log('Retenue après validation manuelle levée : une vraie nouvelle question a été détectée.');",
+        "    }",
+        "",
+        "    el.scrollIntoView?.({ block: \"center\", inline: \"center\" });"
+      ].join("\n")
+    );
+
+    // 5) Dès le clic MANUEL sur Valider, on arme la retenue. Un clic manuel ultérieur
+    // sur Suivant/Passer/Terminer la lève immédiatement, puis l'Auto reprend sur la page suivante.
+    code = replaceOnce(
+      code,
+      "armement retenue validation manuelle",
+      "  ) => {\n    if (!state.config.agent.autoAnswer) return;\n\n    // v6.2 : armer la reprise SYNCHRONEMENT, dès le clic (listener en capture).",
+      [
+        "  ) => {",
+        "    if (!state.config.agent.autoAnswer) return;",
+        "",
+        "    if (actionKind === \"validate\") {",
+        "      state.agent.manualValidationHold = true;",
+        "      state.agent.manualValidationHoldProgress = currentProgressMarker() || null;",
+        "      state.agent.manualValidationHoldAt = Date.now();",
+        "      log('Validation manuelle détectée : Suivant/Passer automatiques suspendus jusqu’à ta navigation manuelle.');",
+        "    } else {",
+        "      if (state.agent.manualValidationHold) {",
+        "        log('Navigation manuelle détectée : retenue après validation manuelle levée.');",
+        "      }",
+        "      state.agent.manualValidationHold = false;",
+        "      state.agent.manualValidationHoldProgress = null;",
+        "      state.agent.manualValidationHoldAt = null;",
+        "    }",
+        "",
+        "    // v6.2 : armer la reprise SYNCHRONEMENT, dès le clic (listener en capture)."
+      ].join("\n")
+    );
+
+    // 6) Sur une page passive/correction, Suivant est autorisé normalement, mais JAMAIS
+    // immédiatement après un Valider manuel. Dans ce cas l'utilisateur garde la main.
     const navigationReplacement = [
       "  const navigatePassivePage = async (label) => {",
+      "    if (state.agent.manualValidationHold) {",
+      "      const heldProgress = state.agent.manualValidationHoldProgress;",
+      "      const currentProgress = currentProgressMarker();",
+      "      const genuinelyMoved = !!heldProgress && !!currentProgress &&",
+      "        currentProgress !== heldProgress && !isFeedbackPage();",
+      "",
+      "      if (!genuinelyMoved) {",
+      "        log(label + ': validation faite manuellement; aucune navigation automatique. Clique toi-même sur Suivant/Passer.');",
+      "        return false;",
+      "      }",
+      "",
+      "      state.agent.manualValidationHold = false;",
+      "      state.agent.manualValidationHoldProgress = null;",
+      "      state.agent.manualValidationHoldAt = null;",
+      "    }",
+      "",
       "    let next = findActionButton(state.config.nextTexts);",
       "    if (!next) next = await waitForActionButton(state.config.nextTexts, state.config.agent.passiveNavigationWaitMs);",
       "",
       "    if (next) {",
-      "      log(label + ': navigation via \\\"' + controlText(next) + '\\\".');",
-      "      await clickElement(next);",
+      "      log(label + ': navigation via ' + controlText(next) + '.');",
+      "      const clicked = await clickElement(next);",
+      "      if (!clicked) return false;",
       "      await wait(state.config.settleDelayMs);",
       "      return true;",
       "    }",
@@ -110,14 +205,15 @@
       "    );",
       "",
       "    if (passAllowed) {",
-      "      log(label + ': navigation autorisée via \\\"' + controlText(pass) + '\\\" car la réponse est déjà soumise/corrigée.');",
-      "      await clickElement(pass);",
+      "      log(label + ': navigation autorisée via ' + controlText(pass) + ' car la réponse est déjà soumise/corrigée.');",
+      "      const clicked = await clickElement(pass);",
+      "      if (!clicked) return false;",
       "      await wait(state.config.settleDelayMs);",
       "      return true;",
       "    }",
       "",
       "    if (pass) {",
-      "      log(label + ': \\\"' + controlText(pass) + '\\\" visible mais soumission non confirmée; Passer bloqué.');",
+      "      log(label + ': ' + controlText(pass) + ' visible mais soumission non confirmée; Passer bloqué.');",
       "      return false;",
       "    }",
       "",
@@ -128,7 +224,7 @@
 
     code = replaceBetween(
       code,
-      "navigation passive sans Passer non soumis",
+      "navigation passive sans Passer non soumis + retenue manuelle",
       "  const navigatePassivePage = async (label) => {",
       "  const validateIfPresent = async () => {",
       navigationReplacement
