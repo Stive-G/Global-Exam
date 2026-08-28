@@ -1,4 +1,4 @@
-# Global Exam Assistant v6.3 — Multi-IA
+# Global Exam Assistant v6.4 — Multi-IA
 
 Assistant navigateur pour analyser les exercices Global Exam, appliquer les réponses dans le DOM, vérifier que l'interaction a réellement fonctionné, puis seulement autoriser la validation/navigation.
 
@@ -16,7 +16,8 @@ Assistant navigateur pour analyser les exercices Global Exam, appliquer les rép
 
 ## 1. Contenu du dossier
 
-- `global-exam-assistant-v6.3.js` : assistant injecté dans la page Global Exam.
+- `global-exam-assistant-v6.3.js` : source de base de l’assistant navigateur.
+- `runtime-patch-v6.4.js` : patch de compatibilité v6.4 appliqué avant exécution pour les différences de DOM observées selon les PC.
 - `loader.js` : petit chargeur à conserver dans un Snippet DevTools pour éviter de recoller le gros script.
 - `multi-ai-proxy.mjs` : proxy Node local qui garde les clés secrètes et route les requêtes vers les IA.
 - `docker-compose.yml` : lance le proxy Node et Nginx.
@@ -113,7 +114,7 @@ Le fichier servi est celui présent dans ce dossier Docker.
 
 ### Alternative : script complet dans un Snippet
 
-Tu peux aussi enregistrer directement `global-exam-assistant-v6.3.js` dans un Snippet, mais `loader.js` est beaucoup plus pratique pour les mises à jour.
+Pour la v6.4, utilise **`loader.js`** : il charge la base v6.3 puis applique automatiquement `runtime-patch-v6.4.js` avant l’exécution. Cela garantit les correctifs v6.4 sur les différents PC.
 
 ## 6. Démarrer l'automatisation
 
@@ -227,7 +228,7 @@ En cas de doute, il bloque la navigation.
 
 Un ordering est dépendant de l'ordre complet. Si un clic échoue après plusieurs fragments, conserver les premiers fragments peut rendre toute la phrase fausse.
 
-v6.3 fait donc :
+v6.4 conserve cette logique :
 
 ```text
 ordering partiel
@@ -256,10 +257,11 @@ le script observe le nouvel état puis reprend automatiquement.
 
 ## 13. Mise à jour du script
 
-Remplace simplement `global-exam-assistant-v6.3.js` dans le dossier puis :
+Après un `git pull`, redémarre simplement les conteneurs :
 
 ```powershell
-docker compose restart cors-proxy
+docker compose down --remove-orphans
+docker compose up -d --force-recreate
 ```
 
 Avec `loader.js`, aucun gros copier-coller n'est nécessaire.
@@ -301,13 +303,11 @@ gs()
 
 Les erreurs provenant du CDN audio Global Exam sont indépendantes du proxy IA local. Si le texte/transcript audio n'existe pas dans le DOM, l'assistant ne doit pas prétendre connaître le contenu audio inaccessible.
 
-
 ## Reprise automatique après une action manuelle
 
 En mode `Auto : ON`, un clic manuel sur **Valider**, **Confirmer**, **Soumettre**, **Suivant**, **Passer** ou **Terminer** interrompt immédiatement une éventuelle attente de rythme et force le script à analyser le nouvel état de la page.
 
-La v6.3 corrige notamment le cas où le script restait `running=true` dans l'attente des 30 minutes et ne reprenait pas après une navigation manuelle.
-
+La logique de reprise automatique corrige notamment le cas où le script restait `running=true` dans l'attente des 30 minutes et ne reprenait pas après une navigation manuelle.
 
 ## Vérifier que la bonne version est chargée
 
@@ -320,16 +320,16 @@ geVersion()
 Résultat attendu :
 
 ```text
-6.2
+6.4
 ```
 
 Si le panneau affiche encore `v6.0` ou `v6.1`, l'ancienne version est toujours présente dans la page. Fais obligatoirement :
 
 1. `Ctrl+R` sur Global Exam ;
-2. vérifie que Docker a été relancé depuis le dossier `global-exam-assistant-v6.3` ;
+2. vérifie que Docker a été relancé depuis le dépôt à jour ;
 3. relance le Snippet `loader.js`.
 
-Le loader v6.3 affiche également un avertissement si le serveur local fournit encore une ancienne version.
+Le loader v6.4 vérifie la base v6.3, applique le patch v6.4 puis refuse de continuer si la version finale n’est pas `6.4`.
 
 ## Correction v6.3 — choix cliquable qui remplit un trou
 
@@ -341,7 +341,6 @@ Le script :
 - possède un fallback `pointer/mouse` ;
 - confirme le clic si la réponse apparaît dans le trou, si le nombre de trous vides diminue, si la puce est consommée ou si un état `selected/pressed` est activé ;
 - interdit `Valider` tant qu'un trou visible de ce type reste vide, même s'il n'y a qu'un seul trou.
-
 
 ## v6.3 — Un seul choix pour un seul trou
 
@@ -366,3 +365,36 @@ Commande de diagnostic :
 ```js
 geDebugButtonChoice()
 ```
+
+## 15. Correction v6.4 — différences de DOM entre plusieurs PC
+
+Sur certains navigateurs/PC, Global Exam expose des chaînes internes comme :
+
+```text
+feedback_form.checkbox_available_to_discuss.label
+```
+
+Ce ne sont pas des réponses. La v6.4 :
+
+- filtre ces clés internes avant toute analyse d’ordering ;
+- limite la banque de fragments aux éléments proches de la zone pointillée ;
+- ne compte plus les `div/span` génériques comme fragments déjà placés ;
+- refuse tout clic si un candidat parasite arrive malgré le filtrage ;
+- ajoute `geDebugOrderingCandidates()` pour afficher les fragments réellement détectés.
+
+Le chargement recommandé reste :
+
+```text
+loader.js
+  -> assistant.js (base v6.3)
+  -> runtime-patch-v6.4.js
+  -> exécution effective v6.4
+```
+
+Après chargement :
+
+```js
+geVersion()
+```
+
+doit retourner `6.4`.

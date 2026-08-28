@@ -1,5 +1,15 @@
 # Changelog
 
+## v6.4
+
+- Correction des différences de DOM entre plusieurs PC.
+- Filtrage des clés i18n internes telles que `feedback_form.checkbox_available_to_discuss.label`.
+- Banque d’ordering limitée aux fragments proches de la zone pointillée.
+- Comptage des fragments déjà placés rendu plus strict.
+- Blocage avant clic si un candidat parasite est détecté.
+- Ajout de `geDebugOrderingCandidates()`.
+- Nouveau `runtime-patch-v6.4.js`, appliqué automatiquement par `loader.js`.
+
 ## v6.3
 
 - Gestion déterministe des exercices avec un seul choix et un seul trou.
