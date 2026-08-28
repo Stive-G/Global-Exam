@@ -1,5 +1,5 @@
 (() => {
-  const HOTFIX_VERSION = "6.4-content-loop-manual-takeover-v2";
+  const HOTFIX_VERSION = "6.4-content-loop-manual-flow-v3";
 
   const replaceOnce = (source, label, before, after) => {
     if (!source.includes(before)) {
@@ -86,28 +86,31 @@
       "  const detectQuestion = () => {\n    if (isFeedbackPage()) return { type: \"feedback\", root: findQuestionRoot(), prompt: \"\", key: \"feedback\" };\n\n    if (isPassiveZeroProgressContentPage()) {\n      return { type: \"none\", root: findQuestionRoot(), prompt: \"\", key: \"content::\" + pageIdentity() };\n    }\n"
     );
 
-    // 3) Etat de prise en main manuelle.
+    // 3) État de reprise manuelle avec deux phases distinctes :
+    // - "validated" : l'utilisateur a cliqué Valider. Sur la correction, Suivant peut
+    //   être automatisé, mais Passer reste interdit.
+    // - "transition" : l'utilisateur a cliqué Suivant/Passer/Terminer, ou l'assistant
+    //   vient de cliquer Suivant après une validation manuelle. Toute navigation auto
+    //   est bloquée jusqu'à ce qu'une vraie nouvelle page soit détectée.
     code = replaceOnce(
       code,
-      "état takeover manuel",
+      "état flux manuel",
       "      manualResumeAt: null,\n      panelCollapsed: false,",
       [
         "      manualResumeAt: null,",
         "      manualValidationHold: false,",
+        "      manualValidationPhase: null,",
         "      manualValidationHoldProgress: null,",
         "      manualValidationHoldKey: null,",
-        "      manualValidationNavigationSeen: false,",
         "      manualValidationHoldAt: null,",
         "      panelCollapsed: false,"
       ].join("\n")
     );
 
-    // 4) Garde universelle : quand l'utilisateur a utilisé Valider/Suivant/Passer
-    // manuellement, aucun clic automatique de navigation n'est permis tant qu'une vraie
-    // nouvelle question n'a pas été détectée.
+    // 4) Garde universelle de clickElement.
     code = replaceOnce(
       code,
-      "garde clic navigation manuelle",
+      "garde clic navigation flux manuel",
       "  const clickElement = async (el) => {\n    if (!el || !isVisible(el) || !isEnabled(el)) return false;\n    el.scrollIntoView?.({ block: \"center\", inline: \"center\" });",
       [
         "  const clickElement = async (el) => {",
@@ -115,83 +118,96 @@
         "",
         "    const clickLabel = controlText(el);",
         "    const clickLoose = normLoose(clickLabel);",
-        "    const automaticNavigationTexts = [...state.config.nextTexts, ...state.config.passTexts].map(normLoose);",
-        "    const isAutomaticNavigation = automaticNavigationTexts.some((wanted) =>",
-        "      clickLoose === wanted || clickLoose.startsWith(wanted + ' ')",
-        "    );",
+        "    const nextTextsLoose = state.config.nextTexts.map(normLoose);",
+        "    const passTextsLoose = state.config.passTexts.map(normLoose);",
+        "    const isAutoNext = nextTextsLoose.some((wanted) => clickLoose === wanted || clickLoose.startsWith(wanted + ' '));",
+        "    const isAutoPass = passTextsLoose.some((wanted) => clickLoose === wanted || clickLoose.startsWith(wanted + ' '));",
         "",
-        "    if (state.agent.manualValidationHold && isAutomaticNavigation) {",
-        "      log('Navigation automatique \\\"' + (clickLabel || 'Suivant/Passer') + '\\\" bloquée : tu as pris la main manuellement. Attente d’une vraie nouvelle question.');",
-        "      return false;",
+        "    if (state.agent.manualValidationHold) {",
+        "      const phase = state.agent.manualValidationPhase;",
+        "",
+        "      if (phase === 'transition' && (isAutoNext || isAutoPass)) {",
+        "        log('Navigation automatique \"' + (clickLabel || 'Suivant/Passer') + '\" bloquée : transition manuelle en cours.');",
+        "        return false;",
+        "      }",
+        "",
+        "      if (phase === 'validated' && isAutoPass) {",
+        "        log('Navigation automatique \"' + (clickLabel || 'Passer') + '\" bloquée : après un Valider manuel, Passer n’est jamais utilisé automatiquement.');",
+        "        return false;",
+        "      }",
+        "",
+        "      if (phase === 'validated' && isAutoNext) {",
+        "        const submitted = isFeedbackPage() || hasSubmittedState();",
+        "        if (!submitted) {",
+        "          log('Navigation automatique \"' + (clickLabel || 'Suivant') + '\" bloquée : soumission/correction non confirmée.');",
+        "          return false;",
+        "        }",
+        "      }",
         "    }",
         "",
         "    el.scrollIntoView?.({ block: \"center\", inline: \"center\" });"
       ].join("\n")
     );
 
-    // 5) Le clic manuel arme la retenue. Important : un clic manuel Suivant/Passer
-    // NE LEVE PAS la retenue immédiatement. Le DOM peut encore être sur l'ancienne
-    // correction et c'est exactement ce qui provoquait le clic automatique sur Passer.
+    // 5) Un clic manuel sur Valider arme la phase "validated".
+    // Un clic manuel de navigation arme la phase "transition" et garde la retenue
+    // jusqu'à la page réellement suivante.
     code = replaceOnce(
       code,
-      "armement takeover manuel",
+      "armement flux manuel",
       "  ) => {\n    if (!state.config.agent.autoAnswer) return;\n\n    // v6.2 : armer la reprise SYNCHRONEMENT, dès le clic (listener en capture).",
       [
         "  ) => {",
         "    if (!state.config.agent.autoAnswer) return;",
         "",
+        "    const manualQuestion = detectQuestion();",
+        "    state.agent.manualValidationHold = true;",
+        "    state.agent.manualValidationHoldProgress = currentProgressMarker() || null;",
+        "    state.agent.manualValidationHoldKey = manualQuestion?.key || null;",
+        "    state.agent.manualValidationHoldAt = Date.now();",
+        "",
         "    if (actionKind === \"validate\") {",
-        "      if (!state.agent.manualValidationHold) {",
-        "        const manualQuestion = detectQuestion();",
-        "        state.agent.manualValidationHoldProgress = currentProgressMarker() || null;",
-        "        state.agent.manualValidationHoldKey = manualQuestion?.key || null;",
-        "      }",
-        "      state.agent.manualValidationHold = true;",
-        "      state.agent.manualValidationNavigationSeen = false;",
-        "      state.agent.manualValidationHoldAt = Date.now();",
-        "      log('Validation manuelle détectée : aucune navigation automatique jusqu’à la prochaine vraie question.');",
+        "      state.agent.manualValidationPhase = 'validated';",
+        "      log('Validation manuelle détectée : reprise Auto autorisée sur la correction via Suivant uniquement; Passer reste bloqué.');",
         "    } else {",
-        "      if (!state.agent.manualValidationHold) {",
-        "        const manualQuestion = detectQuestion();",
-        "        state.agent.manualValidationHoldProgress = currentProgressMarker() || null;",
-        "        state.agent.manualValidationHoldKey = manualQuestion?.key || null;",
-        "      }",
-        "      state.agent.manualValidationHold = true;",
-        "      state.agent.manualValidationNavigationSeen = true;",
-        "      state.agent.manualValidationHoldAt = Date.now();",
-        "      log('Navigation manuelle détectée : l’Auto attend la prochaine vraie question avant de reprendre.');",
+        "      state.agent.manualValidationPhase = 'transition';",
+        "      log('Navigation manuelle détectée : attente de la vraie page suivante avant toute nouvelle navigation automatique.');",
         "    }",
         "",
         "    // v6.2 : armer la reprise SYNCHRONEMENT, dès le clic (listener en capture)."
       ].join("\n")
     );
 
-    // 6) La retenue n'est levée qu'au début du traitement d'une vraie question.
-    // Feedback/correction, page vide, page de contenu et ancienne réponse remplie ne suffisent pas.
+    // 6) Lever la retenue uniquement quand on a réellement quitté la correction/page
+    // depuis laquelle l'action manuelle a eu lieu.
     code = replaceOnce(
       code,
-      "libération takeover sur vraie question",
+      "libération flux manuel sur nouvelle page",
       "      let q = detectQuestion();\n      renderPanel(q);",
       [
         "      let q = detectQuestion();",
         "",
         "      if (state.agent.manualValidationHold) {",
+        "        const phase = state.agent.manualValidationPhase;",
         "        const currentProgress = currentProgressMarker() || null;",
         "        const heldProgress = state.agent.manualValidationHoldProgress;",
         "        const heldKey = state.agent.manualValidationHoldKey;",
-        "        const genuineQuestion = !['feedback', 'none', 'unknown-question'].includes(q.type);",
         "        const movedProgress = !!heldProgress && !!currentProgress && currentProgress !== heldProgress;",
         "        const movedKey = !!heldKey && !!q.key && q.key !== heldKey;",
-        "        const navigationSeen = !!state.agent.manualValidationNavigationSeen;",
-        "        const sameAnsweredPage = q.type === 'answered' && !movedProgress && !movedKey;",
+        "        const leftCorrection = q.type !== 'feedback';",
         "",
-        "        if (genuineQuestion && !sameAnsweredPage && (navigationSeen || movedProgress || movedKey)) {",
+        "        // Une correction peut déjà afficher N+1/N avant que la page suivante soit",
+        "        // chargée : le changement de progression seul ne suffit donc jamais tant",
+        "        // que q.type === 'feedback'.",
+        "        if (leftCorrection && (movedProgress || movedKey)) {",
         "          state.agent.manualValidationHold = false;",
+        "          state.agent.manualValidationPhase = null;",
         "          state.agent.manualValidationHoldProgress = null;",
         "          state.agent.manualValidationHoldKey = null;",
-        "          state.agent.manualValidationNavigationSeen = false;",
         "          state.agent.manualValidationHoldAt = null;",
-        "          log('Nouvelle vraie question détectée : reprise automatique autorisée.');",
+        "          log('Nouvelle page réelle détectée : reprise automatique complète autorisée.');",
+        "        } else if (phase === 'transition' && q.type === 'feedback') {",
+        "          log('Transition encore sur la correction : aucune navigation automatique supplémentaire.');",
         "        }",
         "      }",
         "",
@@ -199,13 +215,58 @@
       ].join("\n")
     );
 
-    // 7) Une page passive/correction ne navigue jamais automatiquement sous takeover.
-    // En fonctionnement purement automatique, la logique normale reste inchangée.
+    // 7) Navigation passive : c'est ici que l'on différencie clairement Valider manuel
+    // et navigation manuelle.
     const navigationReplacement = [
       "  const navigatePassivePage = async (label) => {",
       "    if (state.agent.manualValidationHold) {",
-      "      log(label + ': action manuelle en cours; Suivant/Passer automatiques désactivés jusqu’à la prochaine vraie question.');",
-      "      return false;",
+      "      const phase = state.agent.manualValidationPhase;",
+      "",
+      "      if (phase === 'transition') {",
+      "        log(label + ': transition manuelle en cours; aucune navigation automatique jusqu’à la vraie page suivante.');",
+      "        return false;",
+      "      }",
+      "",
+      "      if (phase === 'validated') {",
+      "        // Le Valider manuel a déjà soumis la question. Sur une correction/résultat,",
+      "        // on peut reprendre automatiquement avec Suivant, mais JAMAIS avec Passer.",
+      "        const submitted = isFeedbackPage() || hasSubmittedState();",
+      "        if (!submitted) {",
+      "          log(label + ': validation manuelle détectée mais soumission/correction non confirmée; navigation bloquée.');",
+      "          return false;",
+      "        }",
+      "",
+      "        let nextAfterManualValidate = findActionButton(state.config.nextTexts);",
+      "        if (!nextAfterManualValidate) {",
+      "          nextAfterManualValidate = await waitForActionButton(state.config.nextTexts, state.config.agent.passiveNavigationWaitMs);",
+      "        }",
+      "",
+      "        if (nextAfterManualValidate) {",
+      "          const transitionProgress = currentProgressMarker() || null;",
+      "          const transitionQuestion = detectQuestion();",
+      "          const transitionKey = transitionQuestion?.key || null;",
+      "          log(label + ': validation manuelle confirmée; reprise automatique via ' + controlText(nextAfterManualValidate) + '.');",
+      "          const clicked = await clickElement(nextAfterManualValidate);",
+      "          if (!clicked) return false;",
+      "",
+      "          // Le clic est maintenant parti : passer en phase transition afin d'empêcher",
+      "          // tout second Suivant/Passer sur un DOM de correction encore présent.",
+      "          state.agent.manualValidationPhase = 'transition';",
+      "          state.agent.manualValidationHoldProgress = transitionProgress;",
+      "          state.agent.manualValidationHoldKey = transitionKey;",
+      "          state.agent.manualValidationHoldAt = Date.now();",
+      "          await wait(state.config.settleDelayMs);",
+      "          return true;",
+      "        }",
+      "",
+      "        const passAfterManualValidate = findActionButton(state.config.passTexts);",
+      "        if (passAfterManualValidate) {",
+      "          log(label + ': ' + controlText(passAfterManualValidate) + ' visible mais volontairement ignoré après validation manuelle; attente de Suivant.');",
+      "        } else {",
+      "          log(label + ': aucun bouton Suivant disponible après validation manuelle; attente.');",
+      "        }",
+      "        return false;",
+      "      }",
       "    }",
       "",
       "    let next = findActionButton(state.config.nextTexts);",
@@ -249,7 +310,7 @@
 
     code = replaceBetween(
       code,
-      "navigation passive + takeover manuel",
+      "navigation passive + flux manuel",
       "  const navigatePassivePage = async (label) => {",
       "  const validateIfPresent = async () => {",
       navigationReplacement
