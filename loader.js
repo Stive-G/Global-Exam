@@ -6,6 +6,7 @@
   const expectedManualHotfix = "6.4-content-loop-manual-flow-v3";
   const expectedContextPatch = "6.4-context-v1";
   const expectedPageAudit = "6.4-page-audit-v2";
+  const pageAuditRecursionFixVersion = "6.4-page-audit-recursion-fix-v1";
   const expectedFinalizePatch = "6.4-finalize-v1";
 
   if (window.__globalExamPager) {
@@ -29,6 +30,46 @@
       code = code.replace(broken, fixed);
       console.log("[Loader Global Exam] Correction syntaxique du patch contexte appliquée.");
     }
+    return code;
+  };
+
+  // Le patch d'audit v2 remplace les appels isFeedbackPage() par
+  // isRealFeedbackPage(). Or looksLikeQuestionPage() appelle alors
+  // isRealFeedbackPage() -> pageDomAudit(). Si pageDomAudit() rappelle à son tour
+  // looksLikeQuestionPage(), on obtient une récursion infinie.
+  // On garde l'audit DOM complet, mais son indice "questionHint" devient une
+  // heuristique DOM autonome qui ne dépend jamais de looksLikeQuestionPage().
+  const repairPageAuditRecursion = (source) => {
+    let code = String(source || "");
+    const before = [
+      "    let questionHint = false;",
+      "    try { questionHint = !!looksLikeQuestionPage(); } catch {}",
+      "    const visibleCorrection = visibleCorrectionBannerNow();"
+    ].join("\n");
+
+    const after = [
+      "    const auditInstruction = bodyInstruction();",
+      "    const auditQuestionMarkers = [",
+      "      'fill in the blank', 'fill in the blanks', 'match the',",
+      "      'place the words', 'put the words', 'choose', 'select',",
+      "      'which of', 'what is', 'who are', 'complete the', 'answer the',",
+      "      'true or false', 'vrai ou faux', 'fill in', 'drag', 'drop'",
+      "    ].map(normLoose);",
+      "    const questionHint = auditQuestionMarkers.some((m) => auditInstruction.includes(m));",
+      "    const visibleCorrection = visibleCorrectionBannerNow();"
+    ].join("\n");
+
+    if (!code.includes(before)) {
+      throw new Error(
+        `[Loader Global Exam] ${pageAuditRecursionFixVersion}: bloc questionHint introuvable.`
+      );
+    }
+
+    code = code.replace(before, after);
+    console.log(
+      `[Loader Global Exam] ${pageAuditRecursionFixVersion} appliqué : ` +
+      `pageDomAudit ne rappelle plus looksLikeQuestionPage().`
+    );
     return code;
   };
 
@@ -155,6 +196,7 @@
   code = window.__applyGlobalExamV64ContextPatch(code);
   code = repairKnownGeneratedSyntax(code);
   code = window.__applyGlobalExamV64PageAuditPatch(code);
+  code = repairPageAuditRecursion(code);
   code = window.__applyGlobalExamV64FinalizePatch(code);
   assertSyntax(code);
   (0, eval)(code);
@@ -171,11 +213,13 @@
     manualFlow: expectedManualHotfix,
     context: expectedContextPatch,
     pageAudit: expectedPageAudit,
+    pageAuditGuard: pageAuditRecursionFixVersion,
     finalize: expectedFinalizePatch,
   });
 
   console.log(
     `[Loader Global Exam] Chargé : assistant v${loaded} | ${expectedManualHotfix} | ` +
-    `${expectedContextPatch} | ${expectedPageAudit} | ${expectedFinalizePatch}`
+    `${expectedContextPatch} | ${expectedPageAudit} | ${pageAuditRecursionFixVersion} | ` +
+    `${expectedFinalizePatch}`
   );
 })();
