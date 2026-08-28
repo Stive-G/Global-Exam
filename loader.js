@@ -144,6 +144,35 @@
     tryCloseSurvey();
   };
 
+  const repairKnownGeneratedSyntax = (source) => {
+    let code = String(source || "");
+
+    // runtime-context-v6.4 v1 générait par erreur un vrai retour à la ligne au
+    // milieu d'une chaîne JS dans geDebugContext(), ce qui produisait :
+    // SyntaxError: Invalid or unexpected token.
+    const brokenDebugLog = "console.log('[Global Exam Assistant] Contexte envoyé aux IA:\n' + activityContextPrompt());";
+    const fixedDebugLog = "console.log('[Global Exam Assistant] Contexte envoyé aux IA:\\n' + activityContextPrompt());";
+    if (code.includes(brokenDebugLog)) {
+      code = code.replace(brokenDebugLog, fixedDebugLog);
+      console.log("[Loader Global Exam] Correction syntaxique du patch contexte appliquée.");
+    }
+
+    return code;
+  };
+
+  const assertGeneratedCodeSyntax = (code) => {
+    try {
+      // Compilation uniquement : le code n'est pas exécuté ici.
+      // Cela évite un eval partiel difficile à diagnostiquer.
+      new Function(String(code || ""));
+    } catch (error) {
+      console.error("[Loader Global Exam] Le code généré est syntaxiquement invalide.", error);
+      throw new Error(
+        `[Loader Global Exam] Syntaxe du code généré invalide: ${error?.message || error}`
+      );
+    }
+  };
+
   installFeedbackSurveyGuard();
 
   const cacheBust = `${expectedVersion}-${Date.now()}`;
@@ -173,8 +202,6 @@
     );
   }
 
-  // Refuser explicitement un ancien hotfix : cela évite de croire qu'une correction
-  // est active alors que Docker sert encore la logique précédente.
   if (!manualHotfixCode.includes(`HOTFIX_VERSION = "${expectedManualHotfix}"`)) {
     throw new Error(
       `[Loader Global Exam] Hotfix manuel obsolète. Attendu: ${expectedManualHotfix}. ` +
@@ -207,6 +234,8 @@
   let code = window.__applyGlobalExamV64Patch(baseCode);
   code = window.__applyGlobalExamV64ContentLoopFix(code);
   code = window.__applyGlobalExamV64ContextPatch(code);
+  code = repairKnownGeneratedSyntax(code);
+  assertGeneratedCodeSyntax(code);
   (0, eval)(code);
 
   const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "inconnue";
