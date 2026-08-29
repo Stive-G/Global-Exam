@@ -22,8 +22,6 @@
 
     // -------------------------------------------------------------------------
     // 1) CONTEXTE : ne plus envoyer les 10 derniers blocs sans discernement.
-    //    On privilégie la transcription de la page courante et les extraits qui
-    //    partagent réellement du vocabulaire avec la question / les choix / zones.
     // -------------------------------------------------------------------------
     const oldContextStart = `  const activityContextPrompt = () => {
     ensureActivityContextIdentity();
@@ -82,9 +80,6 @@
       .sort((a, b) => b.score - a.score || b.index - a.index)
       .slice(0, 5);
 
-    // Si aucun ancien extrait ne correspond à la question, ne pas injecter une
-    // vieille transcription sans rapport. On garde au maximum le dernier contenu
-    // pédagogique non audio comme contexte faible.
     if (!selected.length) {
       const baseline = [...scored].reverse().find((x) => x.snippet.kind !== 'TRANSCRIPTION AUDIO');
       if (baseline) selected = [baseline];
@@ -107,8 +102,6 @@
 
     // -------------------------------------------------------------------------
     // 2) RYTHME : l'état 30 min est lié à l'ID réel de l'activité dans l'URL.
-    //    Une navigation SPA vers une autre activité ne doit jamais conserver
-    //    l'ancien inferredStartedAt (ex. panneau à ~190 min).
     // -------------------------------------------------------------------------
     const oldPacingStart = `  const ensureActivityPacing = () => {
     if (!state.config.activityPacing.enabled) return null;
@@ -134,9 +127,7 @@
     code = replaceOnce(code, "rythme lié à l'activité URL", oldPacingStart, newPacingStart);
 
     // -------------------------------------------------------------------------
-    // 3) DÉSACCORD IA : A/B/C différents ne bloque plus immédiatement.
-    //    Deux votes indépendants supplémentaires sont demandés. On n'applique une
-    //    réponse que si UNE signature atteint une majorité stricte de 3 votes.
+    // 3) DÉSACCORD IA : majorité stricte 3/5 après deux votes de secours.
     // -------------------------------------------------------------------------
     const analyzeMarker = "  const analyzeCurrentQuestion = async () => {\n";
     const consensusHelpers = `  const rescuePersistentConsensus = async (q, seedCandidates = []) => {
@@ -221,6 +212,49 @@
 
     code = replaceOnce(code, "majorité 3/5 après désaccord", oldPersistentBlock, newPersistentBlock);
 
+    // -------------------------------------------------------------------------
+    // 4) DRAG-DROP FILL-WORDS : ne jamais déclarer une question complète tant que
+    //    detectDragDrop() retourne encore des zones à remplir. L'ancien contrôle
+    //    relisait document.body et pouvait sélectionner des wrappers textuels plus
+    //    larges que les vrais trous; isZoneFilled() les considérait alors remplis.
+    // -------------------------------------------------------------------------
+    const oldDragExistingState = `    if (q.type === 'drag-drop' && isFillWordsInstruction()) {
+      const all = getLiveZoneElements(document.body);
+      const filled = all.filter(isZoneFilled).length;
+      return { state: filled === all.length && all.length > 0 ? 'complete' : filled > 0 ? 'partial' : 'empty', detail: \`${'${filled}/${all.length}'} zone(s)\` };
+    }`;
+
+    const newDragExistingState = `    if (q.type === 'drag-drop' && isFillWordsInstruction()) {
+      const localRoot = q.root?.isConnected ? q.root : findQuestionRoot();
+      const localZones = getLiveZoneElements(localRoot);
+      const remaining = Array.isArray(q.zones) ? q.zones.length : 0;
+      const total = localZones.length;
+      const inferredFilled = Math.max(0, total - remaining);
+
+      // Tant que le détecteur de drag-drop expose au moins une zone restante,
+      // l'exercice ne peut JAMAIS être considéré comme complet.
+      if (remaining > 0) {
+        const stateName = inferredFilled > 0 ? 'partial' : 'empty';
+        return {
+          state: stateName,
+          detail: inferredFilled + '/' + total + ' zone(s) locale(s), ' + remaining + ' restante(s)'
+        };
+      }
+
+      const filled = localZones.filter(isZoneFilled).length;
+      return {
+        state: filled === total && total > 0 ? 'complete' : filled > 0 ? 'partial' : 'empty',
+        detail: filled + '/' + total + ' zone(s) locale(s)'
+      };
+    }`;
+
+    code = replaceOnce(
+      code,
+      "état drag-drop basé sur les zones réellement restantes",
+      oldDragExistingState,
+      newDragExistingState
+    );
+
     const debugMarker = "  window.geUnblock = clearHardBlock;";
     if (code.includes(debugMarker)) {
       code = code.replace(
@@ -236,6 +270,14 @@
         `    const response = await fetch('http://localhost:3000/providers', { cache: 'no-store' });\n` +
         `    const data = await response.json();\n` +
         `    console.table(data.providers || []);\n` +
+        `    return data;\n` +
+        `  };\n` +
+        `  window.geDebugDragFillState = () => {\n` +
+        `    const q = detectQuestion();\n` +
+        `    const root = q?.root?.isConnected ? q.root : findQuestionRoot();\n` +
+        `    const localZones = getLiveZoneElements(root);\n` +
+        `    const data = { type: q?.type, remaining: q?.zones?.length || 0, items: q?.items?.length || 0, localZones: localZones.length, localFilledByLegacyHeuristic: localZones.filter(isZoneFilled).length };\n` +
+        `    console.log('[Global Exam Drag State]', data);\n` +
         `    return data;\n` +
         `  };\n` +
         debugMarker
