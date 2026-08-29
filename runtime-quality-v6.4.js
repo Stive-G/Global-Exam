@@ -135,6 +135,12 @@
       .map((c) => normalizeResultForQuestion(q, c))
       .filter((c) => structurallyValidResult(q, c));
 
+    const providerProfile = await getAdaptiveProviderProfile();
+    if (Number(providerProfile?.configured_count || 0) <= 1) {
+      agentLog('Fournisseur unique: maximum 3 analyses pour cette question; votes de secours 4/5 désactivés.');
+      return null;
+    }
+
     const rescueInstruction = [
       'VOTE DE SECOURS INDÉPENDANT.',
       'Résous entièrement la question depuis zéro. Ne choisis pas une réponse juste parce qu’un candidat précédent la proposait.',
@@ -204,7 +210,7 @@
                   result = rescued;
                   agentLog(\`Consensus de secours obtenu pour \${q.type} (\${result.consensus}).\`);
                 } else {
-                  hardBlock(q.key, \`Désaccord IA persistant pour \${q.type} après 5 votes; aucune majorité 3/5. Aucune réponse appliquée.\`);
+                  hardBlock(q.key, \`Désaccord IA persistant pour \${q.type} après les vérifications autorisées. Aucune réponse appliquée.\`);
                   state.agent.lastResult = { error: state.agent.blockReason };
                   return state.agent.lastResult;
                 }
@@ -214,9 +220,7 @@
 
     // -------------------------------------------------------------------------
     // 4) DRAG-DROP FILL-WORDS : ne jamais déclarer une question complète tant que
-    //    detectDragDrop() retourne encore des zones à remplir. L'ancien contrôle
-    //    relisait document.body et pouvait sélectionner des wrappers textuels plus
-    //    larges que les vrais trous; isZoneFilled() les considérait alors remplis.
+    //    detectDragDrop() retourne encore des zones à remplir.
     // -------------------------------------------------------------------------
     const oldDragExistingState = `    if (q.type === 'drag-drop' && isFillWordsInstruction()) {
       const all = getLiveZoneElements(document.body);
@@ -231,8 +235,6 @@
       const total = localZones.length;
       const inferredFilled = Math.max(0, total - remaining);
 
-      // Tant que le détecteur de drag-drop expose au moins une zone restante,
-      // l'exercice ne peut JAMAIS être considéré comme complet.
       if (remaining > 0) {
         const stateName = inferredFilled > 0 ? 'partial' : 'empty';
         return {
@@ -255,6 +257,87 @@
       newDragExistingState
     );
 
+    // -------------------------------------------------------------------------
+    // 5) STRATÉGIE IA ADAPTATIVE.
+    // -------------------------------------------------------------------------
+    const adaptiveHelpers = `  const getAdaptiveProviderProfile = async (force = false) => {
+    const cached = state.agent.adaptiveProviderProfile;
+    const fresh = cached && Date.now() - Number(cached.fetchedAt || 0) < 60000;
+    if (!force && fresh) return cached;
+    try {
+      const response = await fetch('http://localhost:3000/providers', { cache: 'no-store' });
+      if (!response.ok) throw new Error('providers HTTP ' + response.status);
+      const data = await response.json();
+      const profile = {
+        ...data,
+        configured_count: Number(data?.configured_count || 0),
+        configuredProviders: (data?.providers || []).filter((p) => p?.configured).map((p) => p.name),
+        fetchedAt: Date.now(),
+      };
+      state.agent.adaptiveProviderProfile = profile;
+      return profile;
+    } catch (error) {
+      console.warn('[Global Exam Assistant] Profil fournisseurs indisponible; vérifications conservatrices maintenues.', error);
+      return state.agent.adaptiveProviderProfile || { configured_count: 2, configuredProviders: [], mode: 'unknown', fetchedAt: Date.now() };
+    }
+  };
+
+  const adaptiveComplexTypes = new Set(['multi-choice','text','multi-text','select','multi-select','drag-drop','ordering','matching','matrix']);
+
+  const adaptiveShouldDoubleCheck = async (q, result) => {
+    if (!needsDoubleCheck(q)) return false;
+    const profile = await getAdaptiveProviderProfile();
+    const count = Number(profile?.configured_count || 0);
+    const confidence = Number(result?.confidence || 0);
+    const valid = structurallyValidResult(q, result);
+    const explanation = normLoose(result?.explanation || '');
+    const mediaMissing = confidence <= 0.45 && explanation.includes('media present sans transcription');
+
+    if (mediaMissing) {
+      result.consensus = '1/1 contexte incomplet';
+      agentLog('Média sans transcription: aucune répétition Groq ne peut créer une vraie preuve; réponse laissée sous le seuil automatique.');
+      return false;
+    }
+
+    if (count <= 1) {
+      const threshold = adaptiveComplexTypes.has(q.type) ? 0.94 : 0.90;
+      if (valid && confidence >= threshold) {
+        result.consensus = '1/1 adaptatif';
+        result.providers = mergeProviders(result);
+        agentLog('Fournisseur unique (' + (profile?.configuredProviders?.[0] || 'IA') + '): réponse valide à ' + Math.round(confidence * 100) + '%; seconde requête évitée pour préserver le quota.');
+        return false;
+      }
+      agentLog('Fournisseur unique: confiance/structure insuffisante pour un appel unique; une vérification supplémentaire est autorisée.');
+      return true;
+    }
+
+    agentLog('Plusieurs fournisseurs configurés (' + count + '): contre-vérification par un autre fournisseur maintenue.');
+    return true;
+  };
+
+`;
+    code = replaceOnce(code, "helpers stratégie adaptative", analyzeMarker, adaptiveHelpers + analyzeMarker);
+
+    const oldAdaptiveEntry = `      let result = normalizeResultForQuestion(q, await askAiAgent(q, "", 0));
+      if (needsDoubleCheck(q)) {`;
+    const newAdaptiveEntry = `      let result = normalizeResultForQuestion(q, await askAiAgent(q, "", 0));
+      if (await adaptiveShouldDoubleCheck(q, result)) {`;
+    code = replaceOnce(code, "double vérification adaptative", oldAdaptiveEntry, newAdaptiveEntry);
+
+    const oldLowConfidence = `      const low = (state.agent.lowConfidenceRetries.get(q.key) || 0) + 1;
+      state.agent.lowConfidenceRetries.set(q.key, low);
+      log(\`Confiance trop faible (\${Math.round(Number(result.confidence || 0) * 100)}%). Réanalyse \${low}/\${state.config.agent.lowConfidenceMaxRéanalyses}.\`);
+      state.agent.lastResult = null;
+      if (low >= state.config.agent.lowConfidenceMaxRéanalyses) {`;
+    const newLowConfidence = `      const providerCount = Number(state.agent.adaptiveProviderProfile?.configured_count || 0);
+      const adaptiveLowMax = providerCount === 1 ? 1 : state.config.agent.lowConfidenceMaxRéanalyses;
+      const low = (state.agent.lowConfidenceRetries.get(q.key) || 0) + 1;
+      state.agent.lowConfidenceRetries.set(q.key, low);
+      log(\`Confiance trop faible (\${Math.round(Number(result.confidence || 0) * 100)}%). Réanalyse \${low}/\${adaptiveLowMax}.\`);
+      state.agent.lastResult = null;
+      if (low >= adaptiveLowMax) {`;
+    code = replaceOnce(code, "limite réanalyse fournisseur unique", oldLowConfidence, newLowConfidence);
+
     const debugMarker = "  window.geUnblock = clearHardBlock;";
     if (code.includes(debugMarker)) {
       code = code.replace(
@@ -267,11 +350,11 @@
         `    return { questionType: q?.type, prompt: q?.prompt, snippets };\n` +
         `  };\n` +
         `  window.geDebugAiProviders = async () => {\n` +
-        `    const response = await fetch('http://localhost:3000/providers', { cache: 'no-store' });\n` +
-        `    const data = await response.json();\n` +
+        `    const data = await getAdaptiveProviderProfile(true);\n` +
         `    console.table(data.providers || []);\n` +
         `    return data;\n` +
         `  };\n` +
+        `  window.geAdaptiveAiProfile = () => state.agent.adaptiveProviderProfile || null;\n` +
         `  window.geDebugDragFillState = () => {\n` +
         `    const q = detectQuestion();\n` +
         `    const root = q?.root?.isConnected ? q.root : findQuestionRoot();\n` +
