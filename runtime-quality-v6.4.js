@@ -293,10 +293,15 @@
     const explanation = normLoose(result?.explanation || '');
     const mediaMissing = confidence <= 0.45 && explanation.includes('media present sans transcription');
 
-    if (mediaMissing) {
+    if (mediaMissing && count <= 1) {
       result.consensus = '1/1 contexte incomplet';
-      agentLog('Média sans transcription: aucune répétition Groq ne peut créer une vraie preuve; réponse laissée sous le seuil automatique.');
+      agentLog('Média sans transcription et fournisseur unique: répéter le même modèle ne crée pas une preuve indépendante; réponse laissée sous le seuil automatique.');
       return false;
+    }
+
+    if (mediaMissing && count > 1) {
+      agentLog('Média sans transcription, mais ' + count + ' fournisseurs distincts sont configurés: contre-vérification indépendante maintenue.');
+      return true;
     }
 
     if (count <= 1) {
