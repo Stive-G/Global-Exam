@@ -3,6 +3,8 @@ import http from 'node:http';
 const PORT = Number(process.env.PORT || 3001);
 const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 30000);
 const FALLBACK_ENABLED = String(process.env.AI_FALLBACK ?? 'true').toLowerCase() !== 'false';
+const RATE_LIMIT_MAX_WAIT_MS = Math.max(0, Number(process.env.AI_RATE_LIMIT_MAX_WAIT_MS || 12000));
+const SINGLE_PROVIDER_429_RETRY = String(process.env.AI_SINGLE_PROVIDER_429_RETRY ?? 'true').toLowerCase() !== 'false';
 const PROVIDER_ORDER = String(process.env.AI_PROVIDERS || 'groq,openai,gemini,anthropic,mistral,openrouter')
   .split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 
@@ -47,14 +49,62 @@ const providers = {
   },
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+const providerCooldownUntil = new Map();
+
+class ProviderHttpError extends Error {
+  constructor(provider, status, body = '', retryAfterMs = 0) {
+    super(`${provider} HTTP ${status}: ${String(body || '').slice(0, 1200)}`);
+    this.name = 'ProviderHttpError';
+    this.provider = provider;
+    this.status = Number(status || 0);
+    this.body = String(body || '');
+    this.retryAfterMs = Math.max(0, Number(retryAfterMs || 0));
+  }
+}
+
 const configuredProviders = () => PROVIDER_ORDER
   .filter((name) => providers[name]?.key)
   .map((name) => ({ name, ...providers[name] }));
 
-const sendJson = (res, status, payload) => {
+const parseRetryAfterMs = (response, body = '') => {
+  const retryHeader = response?.headers?.get?.('retry-after');
+  if (retryHeader) {
+    const seconds = Number(retryHeader);
+    if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds * 1000));
+    const date = Date.parse(retryHeader);
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  }
+
+  const resetTokens = response?.headers?.get?.('x-ratelimit-reset-tokens');
+  if (resetTokens) {
+    const m = String(resetTokens).match(/([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m)?/i);
+    if (m) {
+      const n = Number(m[1]);
+      const unit = String(m[2] || 's').toLowerCase();
+      if (Number.isFinite(n)) return Math.ceil(n * (unit === 'ms' ? 1 : unit === 'm' ? 60000 : 1000));
+    }
+  }
+
+  const text = String(body || '');
+  const bodyMatch = text.match(/try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|sec(?:onds?)?|m|min(?:utes?)?)?/i);
+  if (bodyMatch) {
+    const n = Number(bodyMatch[1]);
+    const unit = String(bodyMatch[2] || 's').toLowerCase();
+    if (Number.isFinite(n)) {
+      if (unit.startsWith('ms')) return Math.ceil(n);
+      if (unit.startsWith('m')) return Math.ceil(n * 60000);
+      return Math.ceil(n * 1000);
+    }
+  }
+  return 0;
+};
+
+const sendJson = (res, status, payload, extraHeaders = {}) => {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
   res.end(JSON.stringify(payload));
 };
@@ -106,12 +156,7 @@ const extractSystemAndMessages = (messages = []) => {
 
 const openAiCompatible = async ({ name, cfg, model, messages, maxTokens, schema }) => {
   const strict = cfg.strictSchema;
-  const payload = {
-    model,
-    messages,
-    stream: false,
-  };
-  // Certains modèles de raisonnement (notamment GPT-5/o-series) n'acceptent pas toujours temperature.
+  const payload = { model, messages, stream: false };
   if (!/gpt-5|(^|\/)o[1-9]/i.test(model)) payload.temperature = 0;
   if (name === 'groq' || name === 'openai') payload.max_completion_tokens = maxTokens;
   else payload.max_tokens = maxTokens;
@@ -120,9 +165,7 @@ const openAiCompatible = async ({ name, cfg, model, messages, maxTokens, schema 
   } else {
     payload.response_format = { type: 'json_object' };
   }
-  if (name === 'openrouter') {
-    payload.plugins = [{ id: 'response-healing' }];
-  }
+  if (name === 'openrouter') payload.plugins = [{ id: 'response-healing' }];
 
   const doFetch = async (body) => fetch(cfg.url, {
     method: 'POST',
@@ -137,13 +180,14 @@ const openAiCompatible = async ({ name, cfg, model, messages, maxTokens, schema 
 
   let response = await doFetch(payload);
   let text = await response.text();
-  // Certains modèles compatibles OpenAI ne supportent pas json_schema. Repli JSON mode.
   if (!response.ok && strict && response.status === 400) {
     const fallback = { ...payload, response_format: { type: 'json_object' } };
     response = await doFetch(fallback);
     text = await response.text();
   }
-  if (!response.ok) throw new Error(`${name} HTTP ${response.status}: ${text.slice(0, 1200)}`);
+  if (!response.ok) {
+    throw new ProviderHttpError(name, response.status, text, parseRetryAfterMs(response, text));
+  }
   const data = JSON.parse(text);
   const content = data?.choices?.[0]?.message?.content;
   if (!content) throw new Error(`${name}: réponse vide.`);
@@ -180,7 +224,7 @@ const callGemini = async ({ cfg, model, messages, maxTokens, schema }) => {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`gemini HTTP ${response.status}: ${text.slice(0, 1200)}`);
+  if (!response.ok) throw new ProviderHttpError('gemini', response.status, text, parseRetryAfterMs(response, text));
   const data = JSON.parse(text);
   const content = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
   if (!content) throw new Error('gemini: réponse vide.');
@@ -208,7 +252,7 @@ const callAnthropic = async ({ cfg, model, messages, maxTokens, schema }) => {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`anthropic HTTP ${response.status}: ${text.slice(0, 1200)}`);
+  if (!response.ok) throw new ProviderHttpError('anthropic', response.status, text, parseRetryAfterMs(response, text));
   const data = JSON.parse(text);
   const tool = data?.content?.find((x) => x?.type === 'tool_use' && x?.name === 'submit_answer');
   if (tool?.input) return JSON.stringify(tool.input);
@@ -239,17 +283,50 @@ const chooseCandidates = (input) => {
   return FALLBACK_ENABLED ? rotated : [rotated[0]];
 };
 
+const callCandidateAdaptive = async ({ candidate, model, messages, maxTokens, schema, singleProvider }) => {
+  const cooldownUntil = providerCooldownUntil.get(candidate.name) || 0;
+  const remainingCooldown = Math.max(0, cooldownUntil - Date.now());
+  if (remainingCooldown > 0) {
+    if (singleProvider && remainingCooldown <= RATE_LIMIT_MAX_WAIT_MS) {
+      console.warn(`[Multi-IA] ${candidate.name}: quota temporaire, attente ${remainingCooldown}ms avant reprise.`);
+      await sleep(remainingCooldown + 120);
+    } else {
+      throw new ProviderHttpError(candidate.name, 429, 'Fournisseur temporairement en cooldown.', remainingCooldown);
+    }
+  }
+
+  try {
+    return await callProvider({ name: candidate.name, cfg: candidate, model, messages, maxTokens, schema });
+  } catch (error) {
+    if (!(error instanceof ProviderHttpError) || error.status !== 429) throw error;
+
+    const retryAfterMs = Math.max(1000, Number(error.retryAfterMs || 0));
+    providerCooldownUntil.set(candidate.name, Date.now() + retryAfterMs);
+
+    if (!singleProvider || !SINGLE_PROVIDER_429_RETRY || retryAfterMs > RATE_LIMIT_MAX_WAIT_MS) throw error;
+
+    console.warn(`[Multi-IA] ${candidate.name}: HTTP 429, attente automatique ${retryAfterMs}ms puis une nouvelle tentative.`);
+    await sleep(retryAfterMs + 150);
+    providerCooldownUntil.delete(candidate.name);
+    return await callProvider({ name: candidate.name, cfg: candidate, model, messages, maxTokens, schema });
+  }
+};
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/health' || req.url === '/providers')) {
     const configured = configuredProviders();
     return sendJson(res, 200, {
       ok: configured.length > 0,
-      mode: 'multi-ai',
+      mode: configured.length <= 1 ? 'adaptive-single-provider' : 'adaptive-multi-ai',
+      adaptive: true,
       fallback: FALLBACK_ENABLED,
+      rate_limit_retry: SINGLE_PROVIDER_429_RETRY,
+      rate_limit_max_wait_ms: RATE_LIMIT_MAX_WAIT_MS,
       providers: PROVIDER_ORDER.map((name) => ({
         name,
         configured: !!providers[name]?.key,
         model: providers[name]?.model || null,
+        cooldown_ms: Math.max(0, (providerCooldownUntil.get(name) || 0) - Date.now()),
       })),
       configured_count: configured.length,
     });
@@ -267,25 +344,39 @@ const server = http.createServer(async (req, res) => {
     const maxTokens = Number.isFinite(Number(input.max_completion_tokens))
       ? Math.max(32, Math.min(2048, Number(input.max_completion_tokens))) : 320;
     const candidates = chooseCandidates(input);
+    const configuredCount = configuredProviders().length;
+    const singleProvider = configuredCount === 1;
     const errors = [];
 
     for (const candidate of candidates) {
       const forcedModel = input.model && input.model !== 'auto' ? String(input.model) : null;
       const model = forcedModel || candidate.model;
       try {
-        const content = await callProvider({ name: candidate.name, cfg: candidate, model, messages, maxTokens, schema });
-        // Vérification minimale avant de rendre au navigateur.
+        const content = await callCandidateAdaptive({ candidate, model, messages, maxTokens, schema, singleProvider });
         JSON.parse(String(content).replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
         return sendJson(res, 200, {
           provider: candidate.name,
           model,
+          adaptive: true,
+          configured_count: configuredCount,
           choices: [{ index: 0, message: { role: 'assistant', content } }],
         });
       } catch (error) {
         const msg = error?.message || String(error);
-        errors.push({ provider: candidate.name, error: msg });
+        const retryAfterMs = Number(error?.retryAfterMs || 0);
+        errors.push({ provider: candidate.name, status: Number(error?.status || 0) || null, retry_after_ms: retryAfterMs || null, error: msg });
         console.error(`[Multi-IA] ${candidate.name}: ${msg}`);
       }
+    }
+
+    const rateLimited = errors.length > 0 && errors.every((x) => x.status === 429);
+    const retryAfterMs = Math.max(0, ...errors.map((x) => Number(x.retry_after_ms || 0)));
+    if (rateLimited) {
+      return sendJson(res, 429, {
+        error: 'Fournisseur IA temporairement limité.',
+        retry_after_ms: retryAfterMs,
+        attempts: errors,
+      }, retryAfterMs ? { 'Retry-After': String(Math.max(1, Math.ceil(retryAfterMs / 1000))) } : {});
     }
 
     return sendJson(res, 502, { error: 'Tous les fournisseurs IA ont échoué.', attempts: errors });
@@ -297,5 +388,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   const names = configuredProviders().map((x) => x.name);
-  console.log(`[Multi-IA Proxy] Écoute sur 0.0.0.0:${PORT} — fournisseurs: ${names.join(', ') || 'AUCUN'}`);
+  const mode = names.length <= 1 ? 'fournisseur unique adaptatif' : 'multi-IA adaptatif';
+  console.log(`[Multi-IA Proxy] Écoute sur 0.0.0.0:${PORT} — mode ${mode} — fournisseurs: ${names.join(', ') || 'AUCUN'}`);
 });
