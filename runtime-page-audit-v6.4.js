@@ -29,17 +29,31 @@
   const visibleCorrectionBannerNow = () => {
     const patterns = [
       'bravo', 'bonne reponse', 'pas de reponse', 'presque',
+      'pas d inquietude', 'vous n avez pas renseigne de bonnes reponses',
+      'aucune bonne reponse', 'aucune reponse correcte',
       'correct answer', 'incorrect answer', 'wrong answer',
+      'no correct answer', 'no correct answers', 'you did not provide any correct answers',
       'good job', 'well done', 'vous avez renseigne', 'you have answered'
     ];
     const nodes = [...document.querySelectorAll(
       "h1,h2,h3,h4,p,[role='alert'],[class*='feedback'],[class*='result'],[class*='success'],[class*='error'],[class*='correct'],[class*='incorrect']"
     )].filter((el) => isVisible(el) && !isAssistantElement(el));
-    return nodes.some((el) => {
+    const banner = nodes.some((el) => {
       const text = normLoose(textOf(el));
       if (!text || text.length > 320) return false;
       return patterns.some((p) => text === p || text.startsWith(p + ' '));
     });
+    if (banner) return true;
+
+    // Sur certains écrans de correction Global Exam, les anciens radios restent
+    // visibles et cochés. Le trio d'onglets ci-dessous est alors une preuve plus
+    // fiable de l'état correction que la présence des contrôles de réponse.
+    const correctionControls = visibleControls("button,[role='button'],a", document.body)
+      .map((el) => normLoose(controlText(el)));
+    const hasResponsesTab = correctionControls.some((t) => t === 'vos reponses' || t === 'your answers');
+    const hasCorrectionTab = correctionControls.some((t) => t === 'correction' || t === 'correct answer');
+    const hasExplanationTab = correctionControls.some((t) => t === 'explication' || t === 'explanation');
+    return hasCorrectionTab && (hasResponsesTab || hasExplanationTab);
   };
 
   const pageDomAudit = () => {
@@ -178,8 +192,7 @@
   const isRealFeedbackPage = () => {
     const audit = pageDomAudit();
     if (audit.questionLikely) return false;
-    if (!audit.visibleCorrection) return false;
-    return isFeedbackPage();
+    return !!audit.visibleCorrection;
   };
 
   const logPageDomAudit = (audit, detectedType) => {
