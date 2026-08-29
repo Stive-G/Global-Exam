@@ -20,9 +20,7 @@
       `  const QUALITY_RUNTIME_VERSION = "${QUALITY_PATCH_VERSION}";\n\n` + detectMarker
     );
 
-    // -------------------------------------------------------------------------
-    // 1) CONTEXTE : ne plus envoyer les 10 derniers blocs sans discernement.
-    // -------------------------------------------------------------------------
+    // 1) CONTEXTE : sélectionner seulement les extraits utiles à la question courante.
     const oldContextStart = `  const activityContextPrompt = () => {
     ensureActivityContextIdentity();
     const snippets = state.agent.activityContextSnippets.slice(-10);`;
@@ -57,15 +55,11 @@
     if (!q) return all.slice(-8);
 
     const marker = String(currentProgressMarker() || '');
-    const terms = contextTerms(questionContextText(q));
-    const termSet = new Set(terms);
-
+    const termSet = new Set(contextTerms(questionContextText(q)));
     const scored = all.map((snippet, index) => {
-      const text = normLoose(snippet.text || '');
-      const snippetTerms = new Set(contextTerms(text));
+      const snippetTerms = new Set(contextTerms(snippet.text || ''));
       let overlap = 0;
       for (const term of termSet) if (snippetTerms.has(term)) overlap += 1;
-
       const denom = Math.max(1, Math.min(termSet.size || 1, 14));
       let score = (overlap / denom) * 12;
       const sameMarker = !!marker && String(snippet.marker || '') === marker;
@@ -84,7 +78,6 @@
       const baseline = [...scored].reverse().find((x) => x.snippet.kind !== 'TRANSCRIPTION AUDIO');
       if (baseline) selected = [baseline];
     }
-
     return selected.sort((a, b) => a.index - b.index).map((x) => x.snippet);
   };
 
@@ -100,9 +93,7 @@
       "    const contextBlock = activityContextPrompt(q);"
     );
 
-    // -------------------------------------------------------------------------
-    // 2) RYTHME : l'état 30 min est lié à l'ID réel de l'activité dans l'URL.
-    // -------------------------------------------------------------------------
+    // 2) RYTHME : réinitialiser le chrono quand l'activité URL change.
     const oldPacingStart = `  const ensureActivityPacing = () => {
     if (!state.config.activityPacing.enabled) return null;
     const progress = parseProgressMarker();`;
@@ -126,9 +117,118 @@
 
     code = replaceOnce(code, "rythme lié à l'activité URL", oldPacingStart, newPacingStart);
 
-    // -------------------------------------------------------------------------
-    // 3) DÉSACCORD IA : majorité stricte 3/5 après deux votes de secours.
-    // -------------------------------------------------------------------------
+    // 3) MATCH/DRAG-DROP : conserver le mot-cible placé juste avant chaque zone.
+    // Global Exam affiche souvent : "feature" -> [zone vide]. L'ancien zoneContext
+    // ne voyait que "Zone 1", ce qui rendait l'association définition -> mot impossible.
+    const oldZoneContext = `  const zoneContext = (el, index) => {
+    const container = el.closest("p,li,[class*='sentence'],[class*='row'],[class*='line'],[class*='statement']") || el.parentElement;
+    if (!container) return \`Zone \${index + 1}\`;
+
+    // Conserver la position exacte du trou dans la phrase. Deux zones presentes
+    // dans le meme bloc ne doivent pas envoyer le meme contexte a l'IA.
+    try {
+      const beforeRange = document.createRange();
+      beforeRange.selectNodeContents(container);
+      beforeRange.setEndBefore(el);
+      const afterRange = document.createRange();
+      afterRange.selectNodeContents(container);
+      afterRange.setStartAfter(el);
+
+      const before = String(beforeRange.toString() || "").replace(/\\s+/g, " ").trim().slice(-220);
+      const after = String(afterRange.toString() || "").replace(/\\s+/g, " ").trim().slice(0, 220);
+      const positioned = \`\${before} [[ZONE_\${index}]] \${after}\`.replace(/\\s+/g, " ").trim();
+      if (positioned.replace(\`[[ZONE_\${index}]]\`, "").trim()) {
+        return \`Zone \${index + 1} — \${positioned}\`;
+      }
+    } catch {}
+
+    const context = textOf(container).replace(/\\s+/g, " ").trim().slice(0, 420);
+    return context ? \`Zone \${index + 1} — contexte: \${context}\` : \`Zone \${index + 1}\`;
+  };`;
+
+    const newZoneContext = `  const semanticLabelForDropZone = (el) => {
+    if (!el?.isConnected) return '';
+    const reject = (text) => {
+      const raw = String(text || '').replace(/\\s+/g, ' ').trim();
+      const loose = normLoose(raw);
+      if (!raw || raw.length > 120 || loose.length < 2) return true;
+      if (/^[^a-z0-9]+$/i.test(raw)) return true;
+      if (isNavLikeText(raw) || isExerciseUiNoiseText(raw)) return true;
+      if (dragInstructionMarkers.some((m) => loose.includes(normLoose(m)))) return true;
+      return false;
+    };
+
+    const readCandidate = (node) => {
+      if (!node || !isVisible(node) || isAssistantElement(node)) return '';
+      if (node === el || node.contains(el) || node.querySelector?.(dropZoneSelector)) return '';
+      const text = textOf(node).replace(/\\s+/g, ' ').trim();
+      return reject(text) ? '' : text;
+    };
+
+    // Priorité au DOM : chercher les blocs frères immédiatement précédents.
+    let node = el;
+    for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+      let prev = node.previousElementSibling;
+      for (let hop = 0; prev && hop < 4; hop += 1, prev = prev.previousElementSibling) {
+        const text = readCandidate(prev);
+        if (text) return text;
+      }
+    }
+
+    // Fallback géométrique : texte court juste au-dessus de la zone et aligné avec elle.
+    const zr = el.getBoundingClientRect();
+    const candidates = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,div,strong,b,label')]
+      .filter((x) => x !== el && isVisible(x) && !isAssistantElement(x))
+      .map((x) => ({ x, text: readCandidate(x), r: x.getBoundingClientRect() }))
+      .filter((c) => c.text)
+      .filter((c) => {
+        const gap = zr.top - c.r.bottom;
+        const overlap = Math.max(0, Math.min(zr.right, c.r.right) - Math.max(zr.left, c.r.left));
+        const minWidth = Math.max(1, Math.min(zr.width, c.r.width));
+        return gap >= -8 && gap <= 180 && overlap / minWidth >= 0.35;
+      })
+      .sort((a, b) => {
+        const gapA = Math.max(0, zr.top - a.r.bottom);
+        const gapB = Math.max(0, zr.top - b.r.bottom);
+        const centerA = Math.abs((a.r.left + a.r.right) / 2 - (zr.left + zr.right) / 2);
+        const centerB = Math.abs((b.r.left + b.r.right) / 2 - (zr.left + zr.right) / 2);
+        return gapA - gapB || centerA - centerB || a.text.length - b.text.length;
+      });
+    return candidates[0]?.text || '';
+  };
+
+  const zoneContext = (el, index) => {
+    const container = el.closest("p,li,[class*='sentence'],[class*='row'],[class*='line'],[class*='statement']") || el.parentElement;
+    if (container) {
+      try {
+        const beforeRange = document.createRange();
+        beforeRange.selectNodeContents(container);
+        beforeRange.setEndBefore(el);
+        const afterRange = document.createRange();
+        afterRange.selectNodeContents(container);
+        afterRange.setStartAfter(el);
+
+        const before = String(beforeRange.toString() || '').replace(/\\s+/g, ' ').trim().slice(-220);
+        const after = String(afterRange.toString() || '').replace(/\\s+/g, ' ').trim().slice(0, 220);
+        const surrounding = (before + ' ' + after).replace(/\\s+/g, ' ').trim();
+        const positioned = (before + ' [[ZONE_' + index + ']] ' + after).replace(/\\s+/g, ' ').trim();
+        if (normLoose(surrounding).length >= 2) {
+          return 'Zone ' + (index + 1) + ' — ' + positioned;
+        }
+      } catch {}
+    }
+
+    const label = semanticLabelForDropZone(el);
+    if (label) return 'Zone ' + (index + 1) + ' — cible: ' + label;
+
+    const context = container ? textOf(container).replace(/\\s+/g, ' ').trim().slice(0, 420) : '';
+    return context ? 'Zone ' + (index + 1) + ' — contexte: ' + context : 'Zone ' + (index + 1);
+  };`;
+
+    code = replaceOnce(code, "contexte sémantique des zones de matching", oldZoneContext, newZoneContext);
+
+    // 4) DÉSACCORD IA : ne demander des votes supplémentaires que s'il existe
+    // réellement des fournisseurs encore non utilisés après les slots 0/1/2.
     const analyzeMarker = "  const analyzeCurrentQuestion = async () => {\n";
     const consensusHelpers = `  const rescuePersistentConsensus = async (q, seedCandidates = []) => {
     const pool = seedCandidates
@@ -136,8 +236,9 @@
       .filter((c) => structurallyValidResult(q, c));
 
     const providerProfile = await getAdaptiveProviderProfile();
-    if (Number(providerProfile?.configured_count || 0) <= 1) {
-      agentLog('Fournisseur unique: maximum 3 analyses pour cette question; votes de secours 4/5 désactivés.');
+    const configuredCount = Number(providerProfile?.configured_count || 0);
+    if (configuredCount <= 3) {
+      agentLog(configuredCount + ' fournisseur(s) configuré(s): les slots 0/1/2 ont déjà utilisé toutes les opinions indépendantes; aucun vote répété inutile.');
       return null;
     }
 
@@ -146,11 +247,12 @@
       'Résous entièrement la question depuis zéro. Ne choisis pas une réponse juste parce qu’un candidat précédent la proposait.',
       'Utilise uniquement la question actuelle, ses choix/items/zones et le CONTEXTE PERTINENT fourni.',
       'Ignore tout ancien contenu ou transcript qui ne parle pas du sujet de cette question.',
-      q.type === 'drag-drop' ? 'Pour chaque trou, lis précisément le texte avant/après [[ZONE_n]] et construis une bijection complète item -> zone.' : '',
+      q.type === 'drag-drop' ? 'Pour chaque zone, utilise explicitement son texte cible/contexte et construis une bijection complète item -> zone.' : '',
       'Renvoie uniquement le JSON strict attendu.'
     ].filter(Boolean).join('\\n');
 
-    for (const slot of [3, 4]) {
+    const maxVotes = Math.min(5, configuredCount);
+    for (let slot = 3; slot < maxVotes; slot += 1) {
       try {
         const vote = normalizeResultForQuestion(q, await askAiAgent(q, rescueInstruction, slot));
         if (structurallyValidResult(q, vote)) pool.push(vote);
@@ -166,7 +268,6 @@
       if (!groups.has(signature)) groups.set(signature, []);
       groups.get(signature).push(candidate);
     }
-
     const ranking = [...groups.entries()]
       .map(([signature, candidates]) => ({
         signature,
@@ -181,7 +282,6 @@
       agentLog('Vote de secours sans majorité 3/' + pool.length + ' pour ' + q.type + '.');
       return null;
     }
-
     const selected = [...winner.candidates]
       .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0];
     const merged = { ...selected };
@@ -204,24 +304,21 @@
               }`;
 
     const newPersistentBlock = `              } else {
-                agentLog(\`Désaccord persistant pour \${q.type}; lancement de deux votes de secours indépendants...\`);
+                agentLog(\`Désaccord persistant pour \${q.type}; vérification des fournisseurs indépendants encore disponibles...\`);
                 const rescued = await rescuePersistentConsensus(q, [result, review, finalReview]);
                 if (rescued) {
                   result = rescued;
                   agentLog(\`Consensus de secours obtenu pour \${q.type} (\${result.consensus}).\`);
                 } else {
-                  hardBlock(q.key, \`Désaccord IA persistant pour \${q.type} après les vérifications autorisées. Aucune réponse appliquée.\`);
+                  hardBlock(q.key, \`Désaccord IA persistant pour \${q.type} après les vérifications indépendantes disponibles. Aucune réponse appliquée.\`);
                   state.agent.lastResult = { error: state.agent.blockReason };
                   return state.agent.lastResult;
                 }
               }`;
 
-    code = replaceOnce(code, "majorité 3/5 après désaccord", oldPersistentBlock, newPersistentBlock);
+    code = replaceOnce(code, "majorité après désaccord", oldPersistentBlock, newPersistentBlock);
 
-    // -------------------------------------------------------------------------
-    // 4) DRAG-DROP FILL-WORDS : ne jamais déclarer une question complète tant que
-    //    detectDragDrop() retourne encore des zones à remplir.
-    // -------------------------------------------------------------------------
+    // 5) DRAG-DROP FILL-WORDS : ne jamais déclarer complet tant que q.zones existe.
     const oldDragExistingState = `    if (q.type === 'drag-drop' && isFillWordsInstruction()) {
       const all = getLiveZoneElements(document.body);
       const filled = all.filter(isZoneFilled).length;
@@ -234,15 +331,12 @@
       const remaining = Array.isArray(q.zones) ? q.zones.length : 0;
       const total = localZones.length;
       const inferredFilled = Math.max(0, total - remaining);
-
       if (remaining > 0) {
-        const stateName = inferredFilled > 0 ? 'partial' : 'empty';
         return {
-          state: stateName,
+          state: inferredFilled > 0 ? 'partial' : 'empty',
           detail: inferredFilled + '/' + total + ' zone(s) locale(s), ' + remaining + ' restante(s)'
         };
       }
-
       const filled = localZones.filter(isZoneFilled).length;
       return {
         state: filled === total && total > 0 ? 'complete' : filled > 0 ? 'partial' : 'empty',
@@ -250,16 +344,9 @@
       };
     }`;
 
-    code = replaceOnce(
-      code,
-      "état drag-drop basé sur les zones réellement restantes",
-      oldDragExistingState,
-      newDragExistingState
-    );
+    code = replaceOnce(code, "état drag-drop basé sur les zones réellement restantes", oldDragExistingState, newDragExistingState);
 
-    // -------------------------------------------------------------------------
-    // 5) STRATÉGIE IA ADAPTATIVE.
-    // -------------------------------------------------------------------------
+    // 6) STRATÉGIE IA ADAPTATIVE.
     const adaptiveHelpers = `  const getAdaptiveProviderProfile = async (force = false) => {
     const cached = state.agent.adaptiveProviderProfile;
     const fresh = cached && Date.now() - Number(cached.fetchedAt || 0) < 60000;
@@ -298,12 +385,10 @@
       agentLog('Média sans transcription et fournisseur unique: répéter le même modèle ne crée pas une preuve indépendante; réponse laissée sous le seuil automatique.');
       return false;
     }
-
     if (mediaMissing && count > 1) {
       agentLog('Média sans transcription, mais ' + count + ' fournisseurs distincts sont configurés: contre-vérification indépendante maintenue.');
       return true;
     }
-
     if (count <= 1) {
       const threshold = adaptiveComplexTypes.has(q.type) ? 0.94 : 0.90;
       if (valid && confidence >= threshold) {
@@ -315,12 +400,12 @@
       agentLog('Fournisseur unique: confiance/structure insuffisante pour un appel unique; une vérification supplémentaire est autorisée.');
       return true;
     }
-
     agentLog('Plusieurs fournisseurs configurés (' + count + '): contre-vérification par un autre fournisseur maintenue.');
     return true;
   };
 
 `;
+
     code = replaceOnce(code, "helpers stratégie adaptative", analyzeMarker, adaptiveHelpers + analyzeMarker);
 
     const oldAdaptiveEntry = `      let result = normalizeResultForQuestion(q, await askAiAgent(q, "", 0));
@@ -364,7 +449,7 @@
         `    const q = detectQuestion();\n` +
         `    const root = q?.root?.isConnected ? q.root : findQuestionRoot();\n` +
         `    const localZones = getLiveZoneElements(root);\n` +
-        `    const data = { type: q?.type, remaining: q?.zones?.length || 0, items: q?.items?.length || 0, localZones: localZones.length, localFilledByLegacyHeuristic: localZones.filter(isZoneFilled).length };\n` +
+        `    const data = { type: q?.type, remaining: q?.zones?.length || 0, items: q?.items?.length || 0, localZones: localZones.length, localFilledByLegacyHeuristic: localZones.filter(isZoneFilled).length, zones: (q?.zones || []).map((z) => z.text) };\n` +
         `    console.log('[Global Exam Drag State]', data);\n` +
         `    return data;\n` +
         `  };\n` +
