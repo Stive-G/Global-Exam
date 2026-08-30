@@ -33,6 +33,83 @@
       },`;
     code = replaceOnce(code, "rythme par défaut 15 minutes", oldPacingDefaults, newPacingDefaults);
 
+    // Les fill-in-the-blanks en drag/drop ont besoin de la phrase autour du trou,
+    // pas seulement du morceau de texte placé avant la zone. On enrichit q.zones
+    // juste après detectQuestion(), avant toute lecture DOM ou requête IA.
+    const analyzeMarker = "  const analyzeCurrentQuestion = async () => {\n";
+    const dragSentenceHelpers = `  const sentenceWindowForDropZone = (el, index) => {
+    if (!el?.isConnected) return '';
+
+    const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const clipBefore = (value) => {
+      let raw = String(value || '').replace(/\\r/g, '');
+      const matches = [...raw.matchAll(/[.!?;:\\n]/g)];
+      if (matches.length) raw = raw.slice(matches[matches.length - 1].index + 1);
+      let text = clean(raw);
+      if (text.length > 180) text = text.slice(-180).replace(/^\\S*\\s+/, '');
+      return text;
+    };
+    const clipAfter = (value) => {
+      let raw = String(value || '').replace(/\\r/g, '').replace(/^\\s+/, '');
+      const match = raw.match(/[.!?;\\n]/);
+      if (match && Number.isInteger(match.index)) raw = raw.slice(0, match.index + 1);
+      let text = clean(raw);
+      if (text.length > 220) text = text.slice(0, 220).replace(/\\s+\\S*$/, '');
+      return text;
+    };
+
+    const root = findQuestionRoot();
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+      if (root && node !== root && !root.contains(node)) break;
+      try {
+        const beforeRange = document.createRange();
+        beforeRange.selectNodeContents(node);
+        beforeRange.setEndBefore(el);
+        const afterRange = document.createRange();
+        afterRange.selectNodeContents(node);
+        afterRange.setStartAfter(el);
+
+        const before = clipBefore(beforeRange.toString());
+        const after = clipAfter(afterRange.toString());
+        const usefulBefore = normLoose(before).length >= 2;
+        const usefulAfter = normLoose(after).length >= 2;
+        if (usefulBefore && usefulAfter) {
+          return 'Zone ' + (Number(index) + 1) + ' — phrase: ' + before + ' [[ZONE_' + index + ']] ' + after;
+        }
+      } catch {}
+      if (node === root) break;
+    }
+    return '';
+  };
+
+  const enrichDragQuestionZoneContexts = (q) => {
+    if (q?.type !== 'drag-drop' || !Array.isArray(q.zones) || !q.zones.length) return q;
+    let fillWords = false;
+    try { fillWords = !!isFillWordsInstruction(); } catch {}
+    if (!fillWords) return q;
+
+    for (const zone of q.zones) {
+      const original = Number(zone?.originalIndex);
+      const local = Number(zone?.index);
+      const zoneIndex = Number.isInteger(original) ? original : (Number.isInteger(local) ? local : 0);
+      const sentence = sentenceWindowForDropZone(zone?.element, zoneIndex);
+      if (sentence) zone.text = sentence;
+    }
+    return q;
+  };
+
+`;
+    code = replaceOnce(code, "contexte phrase des trous drag-drop", analyzeMarker, dragSentenceHelpers + analyzeMarker);
+
+    const analyzeStart = `  const analyzeCurrentQuestion = async () => {
+    if (state.agent.analyzing) { agentLog("Analyse déjà en cours."); return null; }
+    const q = detectQuestion();`;
+    const analyzeStartEnriched = `  const analyzeCurrentQuestion = async () => {
+    if (state.agent.analyzing) { agentLog("Analyse déjà en cours."); return null; }
+    const q = enrichDragQuestionZoneContexts(detectQuestion());`;
+    code = replaceOnce(code, "enrichissement drag-drop avant IA", analyzeStart, analyzeStartEnriched);
+
     // Exception strictement limitée à la dernière question : sur Global Exam,
     // certains exercices n'affichent pas Valider à N/N. Le bouton Terminer/Finish
     // est alors l'action de soumission finale. On ne l'autorise que si la réponse
@@ -118,7 +195,14 @@
     if (code.includes(debugMarker)) {
       code = code.replace(
         debugMarker,
-        "  window.geFinalizePatchVersion = () => FINALIZE_RUNTIME_VERSION;\n" + debugMarker
+        "  window.geFinalizePatchVersion = () => FINALIZE_RUNTIME_VERSION;\n" +
+        "  window.geDebugDragSentenceContexts = () => {\n" +
+        "    const q = enrichDragQuestionZoneContexts(detectQuestion());\n" +
+        "    const zones = (q?.zones || []).map((z) => ({ index: z.index, originalIndex: z.originalIndex, text: z.text }));\n" +
+        "    console.table(zones);\n" +
+        "    return zones;\n" +
+        "  };\n" +
+        debugMarker
       );
     }
 
