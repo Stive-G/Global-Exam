@@ -123,213 +123,104 @@ Pour le désactiver :
 geActivityPaceOff()
 ```
 
-## 7. Utilisation au quotidien
+## 7. Utilisation
 
-Une fois Docker démarré et le Snippet chargé, lance simplement :
+Une fois Docker démarré et le Snippet chargé, lance :
 
 ```js
 gs()
 ```
 
-L’assistant fonctionne ensuite automatiquement tant que `Auto : ON`.
+Avec `Auto : ON`, l’assistant détecte la page, lit la question complète, interroge les IA configurées, applique la réponse, vérifie le DOM puis valide et passe à la suite uniquement si tout est confirmé. Les pages de contenu et de correction sont reconnues automatiquement. En cas de doute ou de réponse non confirmée, il bloque au lieu de passer la question.
 
-Pour chaque page, il :
+Tu peux intervenir manuellement à tout moment. Après un clic manuel sur `Valider`, `Suivant`, `Passer` ou `Terminer`, l’assistant reprend sur le nouvel état de la page.
 
-1. attend que le DOM soit stable ;
-2. détecte s’il s’agit d’une question, d’une page de contenu ou d’une correction ;
-3. lit l’énoncé et tous les éléments utiles visibles dans le DOM ;
-4. interroge l’IA et, lorsque nécessaire, effectue une contre-vérification ou un arbitrage avec d’autres fournisseurs configurés ;
-5. applique la réponse dans la page ;
-6. vérifie que Global Exam a réellement enregistré l’interaction ;
-7. respecte le rythme configuré ;
-8. valide puis passe à la suite uniquement lorsque l’état de la page est sûr.
-
-Sur une page de correction ou de résultat, aucune nouvelle analyse IA n’est lancée. L’assistant attend l’état approprié puis continue.
-
-Tu peux intervenir manuellement à tout moment. Avec `Auto : ON`, un clic manuel sur `Valider`, `Suivant`, `Passer` ou `Terminer` est détecté et l’assistant reprend ensuite sur le nouvel état de la page.
-
-En cas de doute, de réponse incomplète ou d’interaction non confirmée, l’assistant bloque la navigation au lieu de passer la question.
-
-## 8. Types d’exercices gérés
-
-Le script prend notamment en charge :
-
-- choix unique et choix multiples ;
-- boutons cliquables ;
-- champs texte et plusieurs champs ;
-- listes/selects ;
-- drag/drop et matching ;
-- ordering / construction de phrases ;
-- matrices ;
-- pages de contenu ;
-- pages de correction/résultat.
-
-Les ordering sont construits dans l’ordre des clics. La phrase complète est relue avant application et chaque fragment doit être utilisé exactement une fois.
-
-Les exercices drag/drop sont vérifiés zone par zone afin d’éviter qu’une zone vide soit considérée comme remplie uniquement à cause du texte présent autour d’elle.
-
-## 9. Commandes utiles
-
-### Démarrer, arrêter et contrôler l’assistant
+## 8. Commandes utiles
 
 ```js
+// Démarrage / contrôle
 gs()                         // démarrer ou reprendre
 gx()                         // arrêter
-geAuto()                     // activer / désactiver Auto
+geAuto()                     // Auto ON/OFF
 gePanel()                    // réduire / agrandir le panneau
-geAnalyze()                  // analyser la question sans appliquer
-geAnswer()                   // appliquer la dernière réponse calculée
-geUnblock()                  // lever un blocage après contrôle manuel
-```
+geAnalyze()                  // analyser sans appliquer
+geAnswer()                   // appliquer la dernière réponse
+geUnblock()                  // lever un blocage après vérification manuelle
 
-### Rythme
-
-```js
-geActivityPace(15, 15)       // fixer la cible à 15 min
+// Rythme
+geActivityPace(15, 15)       // cible 15 min
 geActivityPaceOff()          // désactiver le rythme
-geDelay(60)                  // modifier le délai entre traitements, en secondes
-```
+geDelay(60)                  // délai entre traitements en secondes
 
-### IA / fournisseurs
-
-```js
+// IA
 geSetProvider("auto")        // mode multi-IA automatique
-geProviders()                // afficher les fournisseurs disponibles
-geDebugAiProviders()         // afficher les fournisseurs réellement configurés
-geAdaptiveAiProfile()        // afficher le profil IA adaptatif courant
-
-geSetProvider("groq")
-geSetProvider("openai")
+geProviders()                // fournisseurs disponibles
+geDebugAiProviders()         // fournisseurs réellement configurés
+geAdaptiveAiProfile()        // profil IA courant
+geSetProvider("groq")        // forcer un fournisseur
 geSetProvider("gemini")
-geSetProvider("anthropic")
 geSetProvider("mistral")
+geSetProvider("openai")
+geSetProvider("anthropic")
 geSetProvider("openrouter")
+geSetModel("nom-du-modele")  // forcer un modèle
+geSetModel("auto")           // revenir au modèle automatique
 
-geSetModel("nom-du-modele")  // forcer un modèle pour le fournisseur sélectionné
+// Version / diagnostic\ ngeVersion()                  // version principale
+geRuntimeVersions()          // versions des patches chargés
+geDebugQuestion()            // question détectée
+geDebugPageState()           // état de la page
+geDebugDomPage()             // audit DOM
+geDebugQuestionReading()     // ce qui est réellement lu avant IA
+geDebugRelevantContext()     // contexte envoyé aux IA
+
+// Ordering
+geDebugOrdering()
+geDebugOrderingCandidates()
+geDebugOrderingCount()
+geDebugOrderingGrammar()
+
+// Drag/drop
+geDebugDrag()
+geDebugDragFillState()
+geDebugDragSentenceContexts()
 ```
 
-Pour revenir au fonctionnement normal après avoir forcé un fournisseur ou un modèle :
+## 9. Mise à jour et dépannage
 
-```js
-geSetProvider("auto")
-geSetModel("auto")
-```
-
-### Vérifier la version chargée
-
-```js
-geVersion()                  // version principale, attendu : 6.4
-geRuntimeVersions()          // versions des patches et gardes chargés
-```
-
-### Diagnostic général
-
-```js
-geDebugQuestion()            // question et type détectés
-geDebugPageState()           // état question / correction / contenu
-geDebugDomPage()             // audit complet du DOM
-geDebugVerification()        // vérification de sécurité avant validation
-geDebugQuestionReading()     // données de la question réellement lues
-geDebugRelevantContext()     // contexte d’activité retenu pour la question
-```
-
-### Diagnostic ordering / construction de phrases
-
-```js
-geDebugOrdering()            // diagnostic général ordering
-geDebugOrderingCandidates()  // fragments détectés
-geDebugOrderingCount()       // fragments placés / restants
-geDebugOrderingGrammar()     // phrase reconstruite et problèmes détectés
-```
-
-### Diagnostic drag/drop
-
-```js
-geDebugDrag()                // diagnostic drag/drop général
-geDebugDragFillState()       // état des zones et éléments restants
-geDebugDragSentenceContexts()// contexte lu autour de chaque zone
-```
-
-## 10. Mise à jour
-
-Pour récupérer les dernières modifications :
+Pour mettre à jour :
 
 ```powershell
 git pull
 ```
 
-Si le proxy, `.env`, Nginx, Docker ou un fichier runtime servi par les conteneurs a changé, recrée les conteneurs :
+Si `.env`, Docker, Nginx ou le proxy a changé :
 
 ```powershell
 docker compose down --remove-orphans
 docker compose up -d --force-recreate
 ```
 
-Si seul `loader.js` a changé, remplace son contenu dans le Snippet `Auto`. Un redémarrage Docker n’est pas nécessaire pour une modification uniquement dans le loader.
-
-Après toute mise à jour du script :
+Si `loader.js` a changé, remplace aussi son contenu dans le Snippet `Auto`, puis fais toujours :
 
 ```text
-Ctrl+R sur Global Exam
-Ctrl+Enter sur le Snippet Auto
+Ctrl+R
+Ctrl+Enter sur Auto
 ```
 
-Puis vérifie :
-
-```js
-geRuntimeVersions()
-```
-
-## 11. Dépannage rapide
-
-Si le proxy ne démarre pas :
-
-```powershell
-docker compose logs ai-proxy --tail 100
-```
-
-Vérifie également qu’au moins une clé API est renseignée dans `.env`.
-
-Si l’assistant se bloque sur une page :
+Si le script bloque :
 
 ```js
 geDebugQuestion()
-geDebugPageState()
 geDebugDomPage()
 geDebugQuestionReading()
 ```
 
-Pour un ordering :
+Puis, après vérification ou correction manuelle :
 
 ```js
-geDebugOrdering()
-geDebugOrderingCandidates()
-geDebugOrderingCount()
-geDebugOrderingGrammar()
+geUnblock();
+gs();
 ```
 
-Pour un drag/drop :
-
-```js
-geDebugDrag()
-geDebugDragFillState()
-geDebugDragSentenceContexts()
-```
-
-Après avoir corrigé ou vérifié manuellement la page :
-
-```js
-geUnblock()
-gs()
-```
-
-Si une ancienne version semble encore chargée, fais `Ctrl+R`, relance le Snippet puis vérifie :
-
-```js
-geVersion()
-geRuntimeVersions()
-```
-
-Les erreurs CORS provenant du lecteur audio/CDN Global Exam sont indépendantes du proxy IA local. Si aucun transcript n’est disponible, l’assistant ne doit pas inventer le contenu audio.
-
-Pour les détails techniques et l’historique des corrections, consulte `ARCHITECTURE.md` et `CHANGELOG.md`.
+Pour les détails techniques et l’historique des correctifs, voir `ARCHITECTURE.md` et `CHANGELOG.md`.
