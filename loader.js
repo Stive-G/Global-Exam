@@ -11,6 +11,7 @@
   const expectedQualityPatch = "6.4-quality-v1";
   const questionReadingVersion = "6.4-question-reading-v1";
   const orderingStateFixVersion = "6.4-ordering-empty-target-v1";
+  const orderingGrammarFixVersion = "6.4-ordering-grammar-v1";
 
   if (window.__globalExamPager) {
     const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
@@ -36,10 +37,6 @@
     return code;
   };
 
-  // Le patch d'audit v2 remplace les appels isFeedbackPage() par
-  // isRealFeedbackPage(). Or looksLikeQuestionPage() appelle alors
-  // isRealFeedbackPage() -> pageDomAudit(). Si pageDomAudit() rappelle à son tour
-  // looksLikeQuestionPage(), on obtient une récursion infinie.
   const repairPageAuditRecursion = (source) => {
     let code = String(source || "");
     const before = [
@@ -61,11 +58,8 @@
     ].join("\n");
 
     if (!code.includes(before)) {
-      throw new Error(
-        `[Loader Global Exam] ${pageAuditRecursionFixVersion}: bloc questionHint introuvable.`
-      );
+      throw new Error(`[Loader Global Exam] ${pageAuditRecursionFixVersion}: bloc questionHint introuvable.`);
     }
-
     code = code.replace(before, after);
     console.log(
       `[Loader Global Exam] ${pageAuditRecursionFixVersion} appliqué : ` +
@@ -74,10 +68,6 @@
     return code;
   };
 
-  // Global Exam peut laisser dans la zone d'ordering vide un badge/élément interne
-  // (souvent numérique). L'ancien comptage le prenait pour un fragment déjà placé,
-  // puis tentait de l'annuler et bloquait toute la question. On exige désormais une
-  // preuve textuelle/visuelle sémantique avant de déclarer selectedCount > 0.
   const repairOrderingFalsePartialState = (source) => {
     let code = String(source || "");
     const before = `    return {
@@ -146,10 +136,6 @@
     return code;
   };
 
-  // Lecture complète de la question avant chaque appel IA. Le modèle reçoit désormais
-  // non seulement q.prompt, mais aussi le texte visible du bloc de question, tous les
-  // choix/items/zones/champs et la progression courante. Si cette lecture est incomplète,
-  // l'automatisation se bloque au lieu de deviner ou de passer la question.
   const applyQuestionReadingGuard = (source) => {
     let code = String(source || "");
     const analyzeMarker = "  const analyzeCurrentQuestion = async () => {\n";
@@ -274,8 +260,6 @@
       readCheckMarker
     );
 
-    // Toutes les questions générales transportent un snapshot DOM explicite dans
-    // le JSON envoyé à l'IA. Ainsi q.prompt ne peut plus être la seule source lue.
     const serializedMarker = "    const serialized = JSON.stringify(serializeQuestion(q), null, 2);";
     if (!code.includes(serializedMarker)) {
       throw new Error(`[Loader Global Exam] ${questionReadingVersion}: sérialisation question introuvable.`);
@@ -287,8 +271,6 @@
       "    const serialized = JSON.stringify(serializedQuestion, null, 2);"
     );
 
-    // Le drag-drop a un prompt spécial qui retourne avant la sérialisation générale.
-    // On lui injecte donc lui aussi la lecture complète du DOM.
     const dragInstructionA = "        `Instruction: ${q.prompt}` ,";
     const dragInstructionB = "        `Instruction: ${q.prompt}`,";
     const dragInjected =
@@ -303,8 +285,6 @@
       throw new Error(`[Loader Global Exam] ${questionReadingVersion}: instruction drag-drop introuvable.`);
     }
 
-    // Forcer une vraie relecture sémantique, particulièrement importante pour les
-    // ordering où tous les fragments doivent être utilisés exactement une fois.
     const commonMarker = "      \"Tu analyses une question d'exercice.\",\n";
     if (!code.includes(commonMarker)) {
       throw new Error(`[Loader Global Exam] ${questionReadingVersion}: règles prompt communes introuvables.`);
@@ -334,6 +314,137 @@
     }
 
     console.log(`[Loader Global Exam] ${questionReadingVersion} appliqué : lecture DOM complète obligatoire avant IA.`);
+    return code;
+  };
+
+  const repairOrderingGrammarQuality = (source) => {
+    let code = String(source || "");
+
+    const adjudicationMarker = `  const adjudicationNote = (q, first, second) => {`;
+    if (!code.includes(adjudicationMarker)) {
+      throw new Error(`[Loader Global Exam] ${orderingGrammarFixVersion}: adjudicationNote introuvable.`);
+    }
+
+    const helpers = `  const ORDERING_GRAMMAR_FIX_VERSION = "${orderingGrammarFixVersion}";
+
+  const orderingSentenceFromResult = (q, result) => {
+    if (q?.type !== 'ordering' || !Array.isArray(result?.order)) return '';
+    const order = result.order.map(Number);
+    if (order.length !== (q.items?.length || 0) || new Set(order).size !== order.length) return '';
+    if (order.some((idx) => !Number.isInteger(idx) || idx < 0 || idx >= q.items.length)) return '';
+    return order
+      .map((idx) => String(q.items[idx]?.text || '').trim())
+      .join(' ')
+      .replace(/\\s+([?.!,;:])/g, '$1')
+      .replace(/\\s+/g, ' ')
+      .trim();
+  };
+
+  const orderingGrammarIssues = (q, result) => {
+    if (q?.type !== 'ordering') return [];
+    const sentence = orderingSentenceFromResult(q, result);
+    const issues = [];
+    if (!sentence) return ['permutation ou phrase impossible à reconstruire'];
+
+    const instructionLoose = normLoose(q.orderingInstruction || q.prompt || '');
+    const isQuestion = instructionLoose.includes('question');
+    const firstIndex = Number(result.order?.[0]);
+    const firstFragment = normLoose(q.items?.[firstIndex]?.text || '');
+
+    if (!isQuestion) {
+      const suspiciousDeclarativeStart = /^(is|are|was|were|has|have|had|can|could|will|would|should|may|might|must|do|does|did)(\\b|$)/.test(firstFragment);
+      if (suspiciousDeclarativeStart) {
+        issues.push('phrase déclarative commençant par un auxiliaire/verbe sans sujet explicite');
+      }
+      if (/^(is|are|was|were)\\s+(when|a|an|the)\\b/.test(firstFragment)) {
+        issues.push('définition probablement inversée: le terme/sujet doit précéder le fragment verbal');
+      }
+    }
+
+    if (isQuestion) {
+      const qm = (q.items || []).findIndex((item) => /^\\?+$/.test(String(item.text || '').trim()));
+      if (qm >= 0 && Number(result.order?.[result.order.length - 1]) !== qm) {
+        issues.push('point d’interrogation non placé en dernière position');
+      }
+    }
+    return issues;
+  };
+
+`;
+    code = code.replace(adjudicationMarker, helpers + adjudicationMarker);
+
+    const oldOrderingFormat = `      "ordering": 'Format: {"order":[2,0,1],"confidence":0.92,"explanation":"courte"}',`;
+    const newOrderingFormat = `      "ordering": 'Format: {"order":[2,0,1],"confidence":0.92,"explanation":"courte"}. MÉTHODE OBLIGATOIRE: reconstruis d’abord la phrase complète en anglais, puis seulement convertis-la en index. Identifie le sujet/terme, le verbe ou la copule, les articles, compléments et la ponctuation. Pour une phrase déclarative ou une définition, le sujet/terme doit normalement précéder is/are/means/refers to; un fragment comme "is when a" ne doit pas être placé avant le terme qu’il définit. Vérifie accord sujet-verbe, a/an, singulier/pluriel, prépositions, sens naturel et ponctuation. Utilise chaque fragment exactement une fois.',`;
+    if (!code.includes(oldOrderingFormat)) {
+      throw new Error(`[Loader Global Exam] ${orderingGrammarFixVersion}: format ordering introuvable.`);
+    }
+    code = code.replace(oldOrderingFormat, newOrderingFormat);
+
+    const oldStructural = `    if (q.type === "ordering") {
+      const a = (result.order || []).map(Number);
+      return Array.isArray(result.order) && a.length === q.items.length && new Set(a).size === q.items.length && a.every((i) => Number.isInteger(i) && i >= 0 && i < q.items.length);
+    }`;
+    const newStructural = `    if (q.type === "ordering") {
+      const a = (result.order || []).map(Number);
+      const permutationOk = Array.isArray(result.order) && a.length === q.items.length && new Set(a).size === q.items.length && a.every((i) => Number.isInteger(i) && i >= 0 && i < q.items.length);
+      if (!permutationOk) return false;
+      const grammarIssues = orderingGrammarIssues(q, result);
+      if (grammarIssues.length) {
+        console.warn('[Global Exam Ordering] Candidat rejeté avant application:', orderingSentenceFromResult(q, result), grammarIssues);
+        return false;
+      }
+      return true;
+    }`;
+    if (!code.includes(oldStructural)) {
+      throw new Error(`[Loader Global Exam] ${orderingGrammarFixVersion}: validation structurelle ordering introuvable.`);
+    }
+    code = code.replace(oldStructural, newStructural);
+
+    const oldReview = `        const review = normalizeResultForQuestion(q, await askAiAgent(q, "Refais le raisonnement indépendamment. Vérifie tous les index et renvoie la réponse finale selon le même schéma strict.", 1));`;
+    const newReview = `        const reviewInstruction = q.type === 'ordering'
+          ? [
+              'REVISION GRAMMATICALE INDÉPENDANTE DE L’ORDERING.',
+              'Reconstruis toi-même la phrase correcte à partir de TOUS les fragments avant de regarder les index du candidat A.',
+              'Cherche activement une inversion sujet/verbe, un mauvais article a/an, un problème d’accord, de préposition, de singulier/pluriel ou une phrase peu naturelle.',
+              'Ne confirme pas le candidat A simplement parce qu’il semble plausible.',
+              'Candidat A indices: ' + JSON.stringify(result.order || []),
+              'Candidat A phrase reconstruite: "' + orderingSentenceFromResult(q, result) + '"',
+              'Si cette phrase est incorrecte, renvoie l’ordre corrigé. Sinon renvoie le même ordre.',
+              'Utilise chaque fragment exactement une fois et renvoie uniquement le JSON strict attendu.'
+            ].join('\\n')
+          : "Refais le raisonnement indépendamment. Vérifie tous les index et renvoie la réponse finale selon le même schéma strict.";
+        const review = normalizeResultForQuestion(q, await askAiAgent(q, reviewInstruction, 1));`;
+    if (!code.includes(oldReview)) {
+      throw new Error(`[Loader Global Exam] ${orderingGrammarFixVersion}: double vérification ordering introuvable.`);
+    }
+    code = code.replace(oldReview, newReview);
+
+    const oldAdjudicationRule = `      q.type === "drag-drop" ? "Pour un drag-drop, lis la position [[ZONE_n]] dans chaque contexte et associe chaque item exactement une fois." : "",`;
+    const newAdjudicationRule = `      q.type === "ordering"
+        ? "Pour un ordering, ignore les scores de confiance et juge la grammaire/le sens de la phrase réellement reconstruite. Phrase candidate A: \\\"" + orderingSentenceFromResult(q, first) + "\\\". Phrase candidate B: \\\"" + orderingSentenceFromResult(q, second) + "\\\". Reconstruis aussi ta propre phrase depuis zéro; choisis l’ordre grammaticalement et sémantiquement correct, chaque fragment exactement une fois."
+        : (q.type === "drag-drop" ? "Pour un drag-drop, lis la position [[ZONE_n]] dans chaque contexte et associe chaque item exactement une fois." : ""),`;
+    if (!code.includes(oldAdjudicationRule)) {
+      throw new Error(`[Loader Global Exam] ${orderingGrammarFixVersion}: règle arbitrage ordering introuvable.`);
+    }
+    code = code.replace(oldAdjudicationRule, newAdjudicationRule);
+
+    const debugMarker = "  window.geUnblock = clearHardBlock;";
+    if (code.includes(debugMarker)) {
+      code = code.replace(
+        debugMarker,
+        `  window.geOrderingGrammarFixVersion = () => "${orderingGrammarFixVersion}";\n` +
+        `  window.geDebugOrderingGrammar = () => {\n` +
+        `    const q = detectQuestion();\n` +
+        `    const result = state.agent.lastResult;\n` +
+        `    const data = { type: q?.type, items: (q?.items || []).map((x) => x.text), order: result?.order || null, sentence: orderingSentenceFromResult(q, result), issues: orderingGrammarIssues(q, result) };\n` +
+        `    console.log('[Global Exam Ordering Grammar]', data);\n` +
+        `    return data;\n` +
+        `  };\n` +
+        debugMarker
+      );
+    }
+
+    console.log(`[Loader Global Exam] ${orderingGrammarFixVersion} appliqué : reconstruction grammaticale vérifiée avant application.`);
     return code;
   };
 
@@ -411,9 +522,7 @@
   const entries = Object.entries(urls);
   const responses = await Promise.all(entries.map(([, url]) => fetch(url, { cache: "no-store" })));
   responses.forEach((response, index) => {
-    if (!response.ok) {
-      throw new Error(`${entries[index][0]} HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`${entries[index][0]} HTTP ${response.status}`);
   });
 
   const texts = await Promise.all(responses.map((response) => response.text()));
@@ -426,27 +535,13 @@
   const finalizeCode = normalize(finalizeRaw);
   const qualityCode = normalize(qualityRaw);
 
-  if (!baseCode.includes(`ASSISTANT_VERSION = "${baseVersion}"`)) {
-    throw new Error(`[Loader Global Exam] Base v${baseVersion} attendue.`);
-  }
-  if (!runtimeCode.includes("__applyGlobalExamV64Patch")) {
-    throw new Error(`[Loader Global Exam] Patch runtime v${expectedRuntimePatch} absent.`);
-  }
-  if (!manualCode.includes(`HOTFIX_VERSION = "${expectedManualHotfix}"`)) {
-    throw new Error(`[Loader Global Exam] Hotfix manuel attendu: ${expectedManualHotfix}.`);
-  }
-  if (!contextCode.includes(`CONTEXT_PATCH_VERSION = "${expectedContextPatch}"`)) {
-    throw new Error(`[Loader Global Exam] Patch contexte attendu: ${expectedContextPatch}.`);
-  }
-  if (!pageAuditCode.includes(`PAGE_AUDIT_VERSION = "${expectedPageAudit}"`)) {
-    throw new Error(`[Loader Global Exam] Audit de page attendu: ${expectedPageAudit}.`);
-  }
-  if (!finalizeCode.includes(`FINALIZE_PATCH_VERSION = "${expectedFinalizePatch}"`)) {
-    throw new Error(`[Loader Global Exam] Patch de finalisation attendu: ${expectedFinalizePatch}.`);
-  }
-  if (!qualityCode.includes(`QUALITY_PATCH_VERSION = "${expectedQualityPatch}"`)) {
-    throw new Error(`[Loader Global Exam] Patch qualité attendu: ${expectedQualityPatch}.`);
-  }
+  if (!baseCode.includes(`ASSISTANT_VERSION = "${baseVersion}"`)) throw new Error(`[Loader Global Exam] Base v${baseVersion} attendue.`);
+  if (!runtimeCode.includes("__applyGlobalExamV64Patch")) throw new Error(`[Loader Global Exam] Patch runtime v${expectedRuntimePatch} absent.`);
+  if (!manualCode.includes(`HOTFIX_VERSION = "${expectedManualHotfix}"`)) throw new Error(`[Loader Global Exam] Hotfix manuel attendu: ${expectedManualHotfix}.`);
+  if (!contextCode.includes(`CONTEXT_PATCH_VERSION = "${expectedContextPatch}"`)) throw new Error(`[Loader Global Exam] Patch contexte attendu: ${expectedContextPatch}.`);
+  if (!pageAuditCode.includes(`PAGE_AUDIT_VERSION = "${expectedPageAudit}"`)) throw new Error(`[Loader Global Exam] Audit de page attendu: ${expectedPageAudit}.`);
+  if (!finalizeCode.includes(`FINALIZE_PATCH_VERSION = "${expectedFinalizePatch}"`)) throw new Error(`[Loader Global Exam] Patch de finalisation attendu: ${expectedFinalizePatch}.`);
+  if (!qualityCode.includes(`QUALITY_PATCH_VERSION = "${expectedQualityPatch}"`)) throw new Error(`[Loader Global Exam] Patch qualité attendu: ${expectedQualityPatch}.`);
 
   (0, eval)(runtimeCode);
   (0, eval)(manualCode);
@@ -472,14 +567,13 @@
   code = window.__applyGlobalExamV64QualityPatch(code);
   code = repairOrderingFalsePartialState(code);
   code = applyQuestionReadingGuard(code);
+  code = repairOrderingGrammarQuality(code);
   assertSyntax(code);
   (0, eval)(code);
   installFeedbackSurveyGuard();
 
   const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "inconnue";
-  if (loaded !== expectedVersion) {
-    throw new Error(`Version chargée ${loaded}, v${expectedVersion} attendue.`);
-  }
+  if (loaded !== expectedVersion) throw new Error(`Version chargée ${loaded}, v${expectedVersion} attendue.`);
 
   window.geRuntimeVersions = () => ({
     assistant: loaded,
@@ -492,11 +586,13 @@
     quality: expectedQualityPatch,
     questionReading: questionReadingVersion,
     orderingState: orderingStateFixVersion,
+    orderingGrammar: orderingGrammarFixVersion,
   });
 
   console.log(
     `[Loader Global Exam] Chargé : assistant v${loaded} | ${expectedManualHotfix} | ` +
     `${expectedContextPatch} | ${expectedPageAudit} | ${pageAuditRecursionFixVersion} | ` +
-    `${expectedFinalizePatch} | ${expectedQualityPatch} | ${questionReadingVersion} | ${orderingStateFixVersion}`
+    `${expectedFinalizePatch} | ${expectedQualityPatch} | ${questionReadingVersion} | ` +
+    `${orderingStateFixVersion} | ${orderingGrammarFixVersion}`
   );
 })();
