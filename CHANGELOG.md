@@ -1,14 +1,97 @@
 # Changelog
 
-## v6.4
+## v6.4 — état actuel
 
-- Correction des différences de DOM entre plusieurs PC.
-- Filtrage des clés i18n internes telles que `feedback_form.checkbox_available_to_discuss.label`.
-- Banque d’ordering limitée aux fragments proches de la zone pointillée.
-- Comptage des fragments déjà placés rendu plus strict.
-- Blocage avant clic si un candidat parasite est détecté.
-- Ajout de `geDebugOrderingCandidates()`.
-- Nouveau `runtime-patch-v6.4.js`, appliqué automatiquement par `loader.js`.
+### Lecture et sécurité DOM
+
+- Audit du `document.body` complet avant traitement et navigation.
+- Correction de la récursion `pageDomAudit -> isRealFeedbackPage -> looksLikeQuestionPage`.
+- Lecture DOM complète obligatoire avant chaque appel IA.
+- Envoi explicite de `page_dom_reading` avec consigne, texte visible, choix, items, zones et champs.
+- Blocage si une question probable est incomplètement lue ou non reconnue.
+- Reconnaissance renforcée des pages de correction/résultat (`Bravo`, `Presque`, `Pas d’inquiétude`, onglets Correction/Explication).
+- `Passer` ne peut plus être utilisé comme soumission implicite.
+
+### Multi-IA / qualité
+
+- Support Groq, OpenAI, Gemini, Anthropic, Mistral et OpenRouter.
+- Stratégie adaptative selon le nombre de fournisseurs configurés.
+- Avec un seul fournisseur : réduction des doubles appels inutiles lorsque confiance et structure sont très fortes.
+- Avec plusieurs fournisseurs : contre-vérifications par fournisseurs distincts autant que possible.
+- Votes supplémentaires limités aux fournisseurs réellement indépendants encore disponibles.
+- Gestion des HTTP 429, `Retry-After`, cooldown et fallback fournisseur.
+- Sélection du contexte d’activité réellement pertinent pour la question courante.
+- Anciennes transcriptions hors sujet fortement pénalisées.
+- Média sans transcription : confiance limitée uniquement lorsque la question dépend réellement de ce média.
+
+### Drag/drop / matching
+
+- Faux états `drag-drop déjà rempli` supprimés tant que des zones restent réellement visibles.
+- Labels sémantiques de zone conservés pour les exercices de matching.
+- Contexte complet autour des trous avec marqueurs `[[ZONE_n]]` pour les fill-in-the-blanks.
+- Normalisation des réponses drag/drop entre fournisseurs : 0-based, 1-based, libellés et variantes `source/target`.
+- Prompt JSON drag/drop explicite pour les fournisseurs moins stricts comme Mistral.
+- Aucun média audio non requis ne réduit artificiellement la confiance d’un exercice entièrement textuel.
+
+### Ordering / construction de phrases
+
+- Banque d’ordering limitée aux vrais fragments utiles et filtrage des clés i18n parasites.
+- Vérification exacte des petits fragments (`in`, `on`, `the`, `?`).
+- Faux état `1 fragment déjà placé` ignoré lorsque la zone est en réalité vide (`6.4-ordering-empty-target-v1`).
+- Nouvelle vérification grammaticale `6.4-ordering-grammar-v1` :
+  - reconstruction de la phrase complète avant conversion en index ;
+  - prompt renforcé sur sujet/verbe, articles, accords, prépositions et ponctuation ;
+  - deuxième IA utilisée comme critique grammaticale de la phrase candidate ;
+  - arbitre informé des phrases candidates A et B, pas seulement des index ;
+  - rejet local conservateur des inversions manifestes sujet/copule dans une phrase déclarative.
+- Ajout de `geDebugOrderingGrammar()`.
+
+### Finalisation et rythme
+
+- `Terminer/Finish` autorisé comme soumission uniquement sur la dernière question complète et vérifiée.
+- Audit final spécifique avant clic sur `Terminer`.
+- Objectif de durée par défaut passé de **30 minutes à 15 minutes**.
+- Réinitialisation du chrono quand une nouvelle activité est détectée.
+
+### Diagnostics
+
+Ajouts principaux :
+
+```text
+geRuntimeVersions()
+geDebugDomPage()
+geDebugVerification()
+geDebugQuestionReading()
+geDebugRelevantContext()
+geDebugAiProviders()
+geAdaptiveAiProfile()
+geDebugDragFillState()
+geDebugDragSentenceContexts()
+geDebugNormalizeDrag()
+geDebugOrderingCandidates()
+geDebugOrderingCount()
+geDebugOrderingGrammar()
+```
+
+### Fichiers runtime v6.4
+
+Le loader construit maintenant l’assistant dans l’ordre suivant :
+
+```text
+base v6.3
+-> runtime-patch-v6.4
+-> runtime-hotfix-v6.4-content-loop
+-> runtime-context-v6.4
+-> runtime-page-audit-v6.4
+-> garde récursion page-audit
+-> runtime-finalize-v6.4
+-> runtime-quality-v6.4
+-> garde faux ordering partiel
+-> lecture DOM complète
+-> garde grammatical ordering
+-> contrôle syntaxique
+-> exécution v6.4
+```
 
 ## v6.3
 
@@ -17,35 +100,24 @@
 - Suppression du badge avant le clic pour ne pas modifier le texte/target React.
 - Recherche des wrappers parents et activators React.
 - Fallback vers le handler React direct après clic natif et pointer/mouse.
+- Vérification robuste des `button-choice` qui remplissent directement un trou.
 - Ajout de `geDebugButtonChoice()`.
-
-## v6.3
-
-- Correction des `button-choice` qui remplissent directement un trou.
-- Réacquisition de la vraie puce React avant le clic.
-- Fallback pointer/mouse si `.click()` n'est pas pris en compte.
-- Vérification par contenu du trou, diminution des trous vides, état sélectionné ou consommation de la puce.
-- Audit pré-validation renforcé pour les exercices avec un seul trou.
-- Ajout de `geVersion()`.
-- `loader.js` détecte plus clairement une ancienne version déjà chargée ou servie par Docker.
 
 ## v6.1
 
-- correction de la reprise Auto après un clic manuel ;
-- interruption immédiate de l'attente de rythme (30 min) lors d'une action manuelle ;
-- priorité à la nouvelle page sur les anciens blocages de sécurité ;
-- rafraîchissement immédiat du panneau après Valider/Suivant/Passer/Terminer.
+- Reprise Auto après un clic manuel.
+- Interruption immédiate de l’attente de rythme lors d’une action manuelle.
+- Priorité à la nouvelle page sur les anciens blocages de sécurité.
+- Rafraîchissement immédiat du panneau après Valider/Suivant/Passer/Terminer.
 
 ## v6.0
 
-- passage Groq-only -> multi-IA ;
-- ajout Groq/OpenAI/Gemini/Anthropic/Mistral/OpenRouter ;
-- rotation de fournisseurs pour double vérification/arbitrage ;
-- fallback fournisseur ;
-- panneau réductible ;
-- durée cible fixe à 30 min ;
-- correction ordering partiel avec remise à zéro ;
-- vérification exacte des petits fragments (`in`, `on`, `the`, `?`) ;
-- maintien de l'audit pré-validation ;
-- accents dans l'interface, les logs et la documentation ;
-- ajout `loader.js`, README et documentation d'architecture.
+- Passage Groq-only vers multi-IA.
+- Ajout Groq/OpenAI/Gemini/Anthropic/Mistral/OpenRouter.
+- Rotation de fournisseurs pour double vérification/arbitrage.
+- Fallback fournisseur.
+- Panneau réductible.
+- Première gestion du rythme d’activité.
+- Correction ordering partiel avec remise à zéro.
+- Maintien de l’audit pré-validation.
+- Ajout de `loader.js`, README et documentation d’architecture.
