@@ -2,24 +2,6 @@
 
 Assistant navigateur pour analyser les exercices Global Exam, appliquer les réponses dans le DOM, vérifier que l’interaction a réellement été enregistrée, puis seulement autoriser la validation ou la navigation.
 
-## État actuel
-
-La version effective reste **v6.4**, construite à partir de `global-exam-assistant-v6.3.js` puis renforcée au chargement par plusieurs patches runtime et gardes du `loader.js`.
-
-Fonctions principales actuellement actives :
-
-- lecture complète du DOM avant chaque appel IA ;
-- audit global de la page avant réponse, validation et navigation ;
-- pages de correction/résultat reconnues sans appel IA ;
-- vrai multi-fournisseurs avec Groq, OpenAI, Gemini, Anthropic, Mistral et OpenRouter ;
-- stratégie adaptative selon le nombre de fournisseurs configurés ;
-- récupération des HTTP 429 et fallback fournisseur ;
-- contexte d’activité filtré pour ne garder que les extraits pertinents ;
-- drag/drop avec labels sémantiques, contexte de phrase et normalisation des réponses IA ;
-- ordering par clic avec contrôle des fragments restants, faux états partiels filtrés et vérification grammaticale renforcée ;
-- finalisation `Terminer/Finish` autorisée uniquement sur la dernière question complète et vérifiée ;
-- rythme par défaut fixé à **15 minutes par activité**.
-
 ## 1. Fichiers importants
 
 - `global-exam-assistant-v6.3.js` : base navigateur.
@@ -141,84 +123,183 @@ Pour le désactiver :
 geActivityPaceOff()
 ```
 
-## 7. Multi-IA adaptatif
+## 7. Utilisation au quotidien
 
-Mode recommandé :
+Une fois Docker démarré et le Snippet chargé, lance simplement :
+
+```js
+gs()
+```
+
+L’assistant fonctionne ensuite automatiquement tant que `Auto : ON`.
+
+Pour chaque page, il :
+
+1. attend que le DOM soit stable ;
+2. détecte s’il s’agit d’une question, d’une page de contenu ou d’une correction ;
+3. lit l’énoncé et tous les éléments utiles visibles dans le DOM ;
+4. interroge l’IA et, lorsque nécessaire, effectue une contre-vérification ou un arbitrage avec d’autres fournisseurs configurés ;
+5. applique la réponse dans la page ;
+6. vérifie que Global Exam a réellement enregistré l’interaction ;
+7. respecte le rythme configuré ;
+8. valide puis passe à la suite uniquement lorsque l’état de la page est sûr.
+
+Sur une page de correction ou de résultat, aucune nouvelle analyse IA n’est lancée. L’assistant attend l’état approprié puis continue.
+
+Tu peux intervenir manuellement à tout moment. Avec `Auto : ON`, un clic manuel sur `Valider`, `Suivant`, `Passer` ou `Terminer` est détecté et l’assistant reprend ensuite sur le nouvel état de la page.
+
+En cas de doute, de réponse incomplète ou d’interaction non confirmée, l’assistant bloque la navigation au lieu de passer la question.
+
+## 8. Types d’exercices gérés
+
+Le script prend notamment en charge :
+
+- choix unique et choix multiples ;
+- boutons cliquables ;
+- champs texte et plusieurs champs ;
+- listes/selects ;
+- drag/drop et matching ;
+- ordering / construction de phrases ;
+- matrices ;
+- pages de contenu ;
+- pages de correction/résultat.
+
+Les ordering sont construits dans l’ordre des clics. La phrase complète est relue avant application et chaque fragment doit être utilisé exactement une fois.
+
+Les exercices drag/drop sont vérifiés zone par zone afin d’éviter qu’une zone vide soit considérée comme remplie uniquement à cause du texte présent autour d’elle.
+
+## 9. Commandes utiles
+
+### Démarrer, arrêter et contrôler l’assistant
+
+```js
+gs()                         // démarrer ou reprendre
+gx()                         // arrêter
+geAuto()                     // activer / désactiver Auto
+gePanel()                    // réduire / agrandir le panneau
+geAnalyze()                  // analyser la question sans appliquer
+geAnswer()                   // appliquer la dernière réponse calculée
+geUnblock()                  // lever un blocage après contrôle manuel
+```
+
+### Rythme
+
+```js
+geActivityPace(15, 15)       // fixer la cible à 15 min
+geActivityPaceOff()          // désactiver le rythme
+geDelay(60)                  // modifier le délai entre traitements, en secondes
+```
+
+### IA / fournisseurs
+
+```js
+geSetProvider("auto")        // mode multi-IA automatique
+geProviders()                // afficher les fournisseurs disponibles
+geDebugAiProviders()         // afficher les fournisseurs réellement configurés
+geAdaptiveAiProfile()        // afficher le profil IA adaptatif courant
+
+geSetProvider("groq")
+geSetProvider("openai")
+geSetProvider("gemini")
+geSetProvider("anthropic")
+geSetProvider("mistral")
+geSetProvider("openrouter")
+
+geSetModel("nom-du-modele")  // forcer un modèle pour le fournisseur sélectionné
+```
+
+Pour revenir au fonctionnement normal après avoir forcé un fournisseur ou un modèle :
 
 ```js
 geSetProvider("auto")
+geSetModel("auto")
 ```
 
-Voir les fournisseurs réellement configurés :
+### Vérifier la version chargée
 
 ```js
-geDebugAiProviders()
+geVersion()                  // version principale, attendu : 6.4
+geRuntimeVersions()          // versions des patches et gardes chargés
 ```
 
-Voir le profil adaptatif courant :
+### Diagnostic général
 
 ```js
-geAdaptiveAiProfile()
+geDebugQuestion()            // question et type détectés
+geDebugPageState()           // état question / correction / contenu
+geDebugDomPage()             // audit complet du DOM
+geDebugVerification()        // vérification de sécurité avant validation
+geDebugQuestionReading()     // données de la question réellement lues
+geDebugRelevantContext()     // contexte d’activité retenu pour la question
 ```
 
-Avec plusieurs fournisseurs, une question complexe suit généralement :
+### Diagnostic ordering / construction de phrases
+
+```js
+geDebugOrdering()            // diagnostic général ordering
+geDebugOrderingCandidates()  // fragments détectés
+geDebugOrderingCount()       // fragments placés / restants
+geDebugOrderingGrammar()     // phrase reconstruite et problèmes détectés
+```
+
+### Diagnostic drag/drop
+
+```js
+geDebugDrag()                // diagnostic drag/drop général
+geDebugDragFillState()       // état des zones et éléments restants
+geDebugDragSentenceContexts()// contexte lu autour de chaque zone
+```
+
+## 10. Mise à jour
+
+Pour récupérer les dernières modifications :
+
+```powershell
+git pull
+```
+
+Si le proxy, `.env`, Nginx, Docker ou un fichier runtime servi par les conteneurs a changé, recrée les conteneurs :
+
+```powershell
+docker compose down --remove-orphans
+docker compose up -d --force-recreate
+```
+
+Si seul `loader.js` a changé, remplace son contenu dans le Snippet `Auto`. Un redémarrage Docker n’est pas nécessaire pour une modification uniquement dans le loader.
+
+Après toute mise à jour du script :
 
 ```text
-slot 0 -> analyse principale
-slot 1 -> contre-vérification indépendante
-slot 2 -> arbitrage si désaccord
+Ctrl+R sur Global Exam
+Ctrl+Enter sur le Snippet Auto
 ```
 
-Les votes supplémentaires ne sont utilisés que s’il existe réellement d’autres fournisseurs indépendants.
-
-## 8. Lecture complète avant IA
-
-Avant chaque analyse, le script construit un snapshot comprenant notamment :
-
-- progression courante ;
-- consigne ;
-- texte visible du bloc question ;
-- choix ;
-- fragments d’ordering ;
-- items/zones de drag/drop ;
-- champs et options.
-
-Si cette lecture est incomplète, aucune réponse n’est appliquée.
-
-Diagnostic :
+Puis vérifie :
 
 ```js
+geRuntimeVersions()
+```
+
+## 11. Dépannage rapide
+
+Si le proxy ne démarre pas :
+
+```powershell
+docker compose logs ai-proxy --tail 100
+```
+
+Vérifie également qu’au moins une clé API est renseignée dans `.env`.
+
+Si l’assistant se bloque sur une page :
+
+```js
+geDebugQuestion()
+geDebugPageState()
+geDebugDomPage()
 geDebugQuestionReading()
 ```
 
-## 9. Ordering / construction de phrases
-
-Les ordering Global Exam sont traités par clics successifs.
-
-La v6.4 vérifie maintenant :
-
-- tous les fragments sont réellement lus ;
-- une zone vide n’est pas prise pour un fragment déjà placé ;
-- chaque fragment est utilisé exactement une fois ;
-- `?` reste en dernière position pour les questions ;
-- la phrase est reconstruite avant conversion en index ;
-- la contre-vérification voit la phrase candidate complète, pas seulement une liste d’index ;
-- l’arbitre compare les phrases reconstruites ;
-- les inversions évidentes sujet/verbe dans une phrase déclarative sont rejetées avant application.
-
-Exemple d’erreur désormais ciblée :
-
-```text
-is when a interoperability solution can be ...
-```
-
-Le terme/sujet doit être placé avant le fragment verbal :
-
-```text
-interoperability is when a solution can be ...
-```
-
-Diagnostics :
+Pour un ordering :
 
 ```js
 geDebugOrdering()
@@ -227,115 +308,28 @@ geDebugOrderingCount()
 geDebugOrderingGrammar()
 ```
 
-## 10. Drag/drop et matching
-
-Le script conserve maintenant le sens de chaque zone :
-
-- label cible situé au-dessus de la zone pour les matching ;
-- phrase complète autour de `[[ZONE_n]]` pour les fill-in-the-blanks ;
-- normalisation des réponses 0-based/1-based et des variantes `source/target` ;
-- aucune zone ne peut être considérée remplie uniquement parce qu’un wrapper parent contient du texte.
-
-Diagnostics :
-
-```js
-geDebugDragFillState()
-geDebugDragSentenceContexts()
-geDebugNormalizeDrag(...)
-```
-
-## 11. Sécurité avant validation
-
-Une réponse IA ne suffit jamais à déclencher `Valider`, `Suivant` ou `Terminer`.
-
-L’assistant exige notamment :
-
-- résultat structurel valide ;
-- confiance ou consensus suffisant ;
-- application réellement confirmée dans React/DOM ;
-- aucune zone obligatoire vide ;
-- aucun fragment d’ordering restant ;
-- ordre final confirmé ;
-- audit DOM pré-validation réussi.
-
-En cas de doute, la page reste en place et le script bloque.
-
-## 12. Correction / résultat
-
-Les écrans contenant par exemple :
-
-```text
-Pas d’inquiétude !
-Presque !
-Bravo !
-Vos réponses / Correction / Explication
-```
-
-sont traités comme des pages de correction/résultat, même si d’anciens radios, cases ou fragments restent visibles. Aucune nouvelle analyse IA n’y est lancée.
-
-## 13. Commandes utiles
-
-```js
-gs()                         // démarrer / reprendre
-gx()                         // arrêter
-geAuto()                     // Auto ON/OFF
-gePanel()                    // réduire / agrandir
-geAnalyze()                  // analyser sans appliquer
-geAnswer()                   // appliquer le dernier résultat
-geUnblock()                  // lever un blocage après contrôle
-geRuntimeVersions()          // versions de toutes les couches
-geDebugAiProviders()         // fournisseurs configurés
-geDebugQuestionReading()     // lecture envoyée aux IA
-geDebugDomPage()             // audit DOM global
-geDebugVerification()        // vérification de sécurité
-geDebugOrderingCount()       // ordering placé/restant
-geDebugOrderingGrammar()     // phrase reconstruite + problèmes locaux
-geDebugDragFillState()       // état drag/drop
-```
-
-## 14. Mise à jour
-
-Après modification de `.env` ou du proxy Node :
-
-```powershell
-docker compose down --remove-orphans
-docker compose up -d --force-recreate
-```
-
-Après modification d’un fichier runtime monté par Docker, un `git pull` puis un rechargement de la page suffit souvent, mais recréer les conteneurs reste la procédure la plus sûre.
-
-Après modification de `loader.js`, il faut aussi remplacer le contenu du Snippet `Auto` par le nouveau `loader.js`.
-
-Toujours faire `Ctrl+R` avant de charger une nouvelle version : deux instances de l’assistant ne doivent pas coexister sur la même page.
-
-## 15. Dépannage rapide
-
-```js
-geRuntimeVersions()
-geDebugDomPage()
-geDebugQuestionReading()
-geDebugAiProviders()
-```
-
-Pour un ordering :
-
-```js
-geDebugOrderingCount()
-geDebugOrderingGrammar()
-```
-
 Pour un drag/drop :
 
 ```js
+geDebugDrag()
 geDebugDragFillState()
 geDebugDragSentenceContexts()
 ```
 
-Après vérification manuelle :
+Après avoir corrigé ou vérifié manuellement la page :
 
 ```js
-geUnblock();
-gs();
+geUnblock()
+gs()
 ```
 
-Les erreurs CORS provenant du CDN audio Global Exam sont indépendantes du proxy IA local. Un média inaccessible sans transcription n’est pas inventé par l’assistant ; les exercices entièrement textuels restent toutefois traitables lorsque toutes les informations nécessaires sont visibles dans le DOM.
+Si une ancienne version semble encore chargée, fais `Ctrl+R`, relance le Snippet puis vérifie :
+
+```js
+geVersion()
+geRuntimeVersions()
+```
+
+Les erreurs CORS provenant du lecteur audio/CDN Global Exam sont indépendantes du proxy IA local. Si aucun transcript n’est disponible, l’assistant ne doit pas inventer le contenu audio.
+
+Pour les détails techniques et l’historique des corrections, consulte `ARCHITECTURE.md` et `CHANGELOG.md`.
