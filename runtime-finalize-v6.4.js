@@ -20,7 +20,7 @@
       `  const FINALIZE_RUNTIME_VERSION = "${FINALIZE_PATCH_VERSION}";\n\n` + detectMarker
     );
 
-    // Rythme par défaut : une activité vise désormais 15 minutes au lieu de 30.
+    // Rythme par défaut : 15 minutes.
     const oldPacingDefaults = `      activityPacing: {
         enabled: true,
         minMinutes: 30,
@@ -33,9 +33,9 @@
       },`;
     code = replaceOnce(code, "rythme par défaut 15 minutes", oldPacingDefaults, newPacingDefaults);
 
-    // Un lecteur audio présent sur la page ne signifie pas que chaque exercice en
-    // dépend. Pour les fill-words/ordering dont tout le contenu utile est visible,
-    // ne pas plafonner artificiellement la confiance à 45 %.
+    // Un lecteur audio présent sur la page ne signifie pas que l'exercice courant
+    // dépend de cet audio. Les matching/drag-drop entièrement lisibles dans le DOM
+    // sont autonomes sauf si la consigne demande explicitement d'écouter/regarder.
     const oldMediaCap = `          const mediaContext = currentMediaContextState();
           if (mediaContext.hasMedia && !mediaContext.hasTranscript) {
             result.confidence = Math.min(result.confidence, 0.45);
@@ -44,9 +44,15 @@
     const newMediaCap = `          const mediaContext = currentMediaContextState();
           let visibleExerciseSelfContained = false;
           try {
-            visibleExerciseSelfContained =
-              (q?.type === 'drag-drop' && isFillWordsInstruction() && (q.items?.length || 0) > 0 && (q.zones?.length || 0) > 0) ||
-              (q?.type === 'ordering' && (q.items?.length || 0) >= 2);
+            const promptLoose = normLoose(q?.prompt || '');
+            const mediaExplicitlyRequired = [
+              'listen', 'listening', 'audio', 'recording', 'hear', 'speaker',
+              'watch the video', 'watch this video', 'video clip', 'dialogue', 'conversation'
+            ].some((marker) => promptLoose.includes(normLoose(marker)));
+            visibleExerciseSelfContained = !mediaExplicitlyRequired && (
+              (q?.type === 'drag-drop' && (q.items?.length || 0) > 0 && (q.zones?.length || 0) > 0) ||
+              (q?.type === 'ordering' && (q.items?.length || 0) >= 2)
+            );
           } catch {}
           if (mediaContext.hasMedia && !mediaContext.hasTranscript && !visibleExerciseSelfContained) {
             result.confidence = Math.min(result.confidence, 0.45);
@@ -55,6 +61,155 @@
             result.explanation = (result.explanation ? result.explanation + ' ' : '') + '[Question textuelle autonome : le média sans transcription n’est pas requis pour résoudre cet exercice.]';
           }`;
     code = replaceOnce(code, "média non requis pour exercice textuel autonome", oldMediaCap, newMediaCap);
+
+    // Le prompt drag-drop spécial ne contenait pas le format JSON concret. Groq et
+    // Gemini sont contraints côté API, mais Mistral ne reçoit qu'un json_object.
+    // On impose donc le format et les index 0-based directement dans le prompt.
+    const oldDragSchemaInstruction = `        "Reponds uniquement selon le schema JSON impose par le serveur.",`;
+    const newDragSchemaInstruction = `        "Reponds uniquement avec un objet JSON valide, sans Markdown ni texte autour.",
+        'FORMAT OBLIGATOIRE: {"placements":[{"item":0,"zone":0}],"confidence":0.92,"explanation":"courte"}',
+        "placements doit contenir EXACTEMENT une entrée par zone.",
+        "item et zone sont des ENTIERS indexés à partir de 0, uniquement avec les index affichés ci-dessous.",
+        "Chaque item et chaque zone doivent être utilisés exactement une fois; aucun libellé texte à la place des index.",`;
+    code = replaceOnce(code, "schéma JSON explicite drag-drop", oldDragSchemaInstruction, newDragSchemaInstruction);
+
+    // Normalisation tolérante des réponses drag-drop : certains fournisseurs
+    // renvoient malgré tout des index 1-based, des libellés (RJ45/WiFi) ou des clés
+    // source/target. On les ramène au schéma canonique item/zone 0-based AVANT le
+    // calcul de signature et l'arbitrage.
+    const normalizeMarker = `  const normalizeResultForQuestion = (q, raw) => {`;
+    const dragNormalizeHelpers = `  const dragDropZoneLabel = (text) => String(text || '')
+    .replace(/^\\s*zone\\s+\\d+\\s*[—:=-]?\\s*/i, '')
+    .replace(/^\\s*(?:cible|target|contexte|context|phrase)\\s*[:=-]?\\s*/i, '')
+    .replace(/\\[\\[ZONE_\\d+\\]\\]/gi, ' ')
+    .replace(/\\s+/g, ' ')
+    .trim();
+
+  const dragDropSemanticIndex = (entries, value, kind = 'item') => {
+    if (value && typeof value === 'object') {
+      value = value.index ?? value.item ?? value.zone ?? value.text ?? value.label ?? value.name ?? value.value;
+    }
+    const wantedRaw = String(value ?? '').trim();
+    const wanted = normLoose(wantedRaw);
+    if (!wanted) return null;
+
+    if (kind === 'zone') {
+      const zoneNumber = wantedRaw.match(/^\\s*zone\\s*(\\d+)\\s*$/i);
+      if (zoneNumber) {
+        const idx = Number(zoneNumber[1]) - 1;
+        if (Number.isInteger(idx) && idx >= 0 && idx < entries.length) return idx;
+      }
+    }
+
+    const candidates = (entries || []).map((entry, index) => {
+      const raw = String(entry?.text || '');
+      const simplified = kind === 'zone' ? dragDropZoneLabel(raw) : raw;
+      return { index, full: normLoose(raw), simple: normLoose(simplified) };
+    });
+
+    const exact = candidates.find((c) => c.simple === wanted || c.full === wanted);
+    if (exact) return exact.index;
+    const contained = candidates.find((c) =>
+      (c.simple && (c.simple.includes(wanted) || wanted.includes(c.simple))) ||
+      (c.full && (c.full.includes(wanted) || wanted.includes(c.full)))
+    );
+    if (contained) return contained.index;
+
+    let best = null;
+    let bestScore = 0;
+    for (const c of candidates) {
+      const score = Math.max(
+        c.simple ? promptSimilarity(wanted, c.simple) : 0,
+        c.full ? promptSimilarity(wanted, c.full) : 0
+      );
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return best && bestScore >= 0.55 ? best.index : null;
+  };
+
+  const dragDropRawPlacements = (result) => {
+    if (Array.isArray(result?.placements)) return result.placements;
+    if (result?.placements && typeof result.placements === 'object') {
+      return Object.entries(result.placements).map(([zone, item]) => ({ zone, item }));
+    }
+    if (Array.isArray(result?.pairs)) return result.pairs;
+    if (Array.isArray(result?.matches)) return result.matches;
+    if (result?.mapping && typeof result.mapping === 'object') {
+      return Object.entries(result.mapping).map(([zone, item]) => ({ zone, item }));
+    }
+    return [];
+  };
+
+  const dragDropField = (placement, side) => {
+    if (!placement || typeof placement !== 'object') return undefined;
+    if (side === 'item') {
+      return placement.item ?? placement.itemIndex ?? placement.item_index ??
+        placement.source ?? placement.sourceIndex ?? placement.source_index ??
+        placement.word ?? placement.answer ?? placement.definition ?? placement.left;
+    }
+    return placement.zone ?? placement.zoneIndex ?? placement.zone_index ??
+      placement.target ?? placement.targetIndex ?? placement.target_index ??
+      placement.destination ?? placement.label ?? placement.right;
+  };
+
+  const dragDropOneBased = (values, count) => {
+    if (!count || values.length !== count) return false;
+    const nums = values.map((v) => Number(v));
+    return nums.every((n) => Number.isInteger(n) && n >= 1 && n <= count) &&
+      new Set(nums).size === count && !nums.includes(0);
+  };
+
+  const normalizeDragDropPlacements = (q, result) => {
+    const raw = dragDropRawPlacements(result);
+    if (!raw.length) return [];
+
+    const rawItems = raw.map((p) => dragDropField(p, 'item'));
+    const rawZones = raw.map((p) => dragDropField(p, 'zone'));
+    const itemOneBased = dragDropOneBased(rawItems, q.items?.length || 0);
+    const zoneOneBased = dragDropOneBased(rawZones, q.zones?.length || 0);
+
+    const numericOrSemantic = (entries, value, kind, oneBased) => {
+      const n = Number(value);
+      if (Number.isInteger(n)) {
+        const idx = oneBased ? n - 1 : n;
+        if (idx >= 0 && idx < entries.length) return idx;
+      }
+      return dragDropSemanticIndex(entries, value, kind);
+    };
+
+    return raw.map((placement) => {
+      const rawItem = dragDropField(placement, 'item');
+      const rawZone = dragDropField(placement, 'zone');
+      let item = numericOrSemantic(q.items || [], rawItem, 'item', itemOneBased);
+      let zone = numericOrSemantic(q.zones || [], rawZone, 'zone', zoneOneBased);
+
+      // Certains modèles inversent source/target malgré le prompt. N'inverser que
+      // si la lecture directe échoue et que l'inversion est, elle, non ambiguë.
+      if (!Number.isInteger(item) || !Number.isInteger(zone)) {
+        const swappedItem = numericOrSemantic(q.items || [], rawZone, 'item', zoneOneBased);
+        const swappedZone = numericOrSemantic(q.zones || [], rawItem, 'zone', itemOneBased);
+        if (Number.isInteger(swappedItem) && Number.isInteger(swappedZone)) {
+          item = swappedItem;
+          zone = swappedZone;
+        }
+      }
+      return { item, zone };
+    });
+  };
+
+`;
+    code = replaceOnce(code, "helpers normalisation drag-drop", normalizeMarker, dragNormalizeHelpers + normalizeMarker);
+
+    const oldNormalizeStart = `  const normalizeResultForQuestion = (q, raw) => {
+    if (!raw || typeof raw !== "object") return raw;
+    const result = {...raw};`;
+    const newNormalizeStart = `  const normalizeResultForQuestion = (q, raw) => {
+    if (!raw || typeof raw !== "object") return raw;
+    const result = {...raw};
+    if (q.type === "drag-drop") {
+      result.placements = normalizeDragDropPlacements(q, result);
+    }`;
+    code = replaceOnce(code, "normalisation réponse drag-drop", oldNormalizeStart, newNormalizeStart);
 
     // Les fill-in-the-blanks en drag/drop ont besoin de la phrase autour du trou,
     // pas seulement du morceau de texte placé avant la zone. On enrichit q.zones
@@ -133,10 +288,7 @@
     const q = enrichDragQuestionZoneContexts(detectQuestion());`;
     code = replaceOnce(code, "enrichissement drag-drop avant IA", analyzeStart, analyzeStartEnriched);
 
-    // Exception strictement limitée à la dernière question : sur Global Exam,
-    // certains exercices n'affichent pas Valider à N/N. Le bouton Terminer/Finish
-    // est alors l'action de soumission finale. On ne l'autorise que si la réponse
-    // est complète, déjà appliquée/vérifiée et après l'audit de pré-validation.
+    // Dernière question : Terminer/Finish peut être l'action de soumission finale.
     const beforeFinalWait = `      if (submissionState.pass) {
         log(\`"\${controlText(submissionState.pass)}" est visible: la question n'est PAS soumise. Aucun clic automatique; attente de Valider/Validée.\`);
         return false;
@@ -184,9 +336,8 @@
 
     code = replaceOnce(code, "finalisation dernière question", beforeFinalWait, afterFinalWait);
 
-    // Le garde DOM global bloque normalement tout Suivant/Passer lorsqu'une
-    // question non soumise est encore visible. Il doit laisser passer uniquement
-    // Terminer/Finish dans le cas final sécurisé ci-dessus.
+    // Le garde DOM global laisse Terminer/Finish passer uniquement sur la dernière
+    // question complète et vérifiée.
     const oldClickGuard = `      if ((clickAuditNext || clickAuditPass) && auditBeforeClick.questionLikely && !auditBeforeClick.submitted) {
         log('Clic automatique ' + (clickAuditLabel || 'Suivant/Passer') + ' bloqué par audit DOM: question non soumise visible.');
         return false;
@@ -224,6 +375,12 @@
         "    const zones = (q?.zones || []).map((z) => ({ index: z.index, originalIndex: z.originalIndex, text: z.text }));\n" +
         "    console.table(zones);\n" +
         "    return zones;\n" +
+        "  };\n" +
+        "  window.geDebugNormalizeDrag = (raw) => {\n" +
+        "    const q = enrichDragQuestionZoneContexts(detectQuestion());\n" +
+        "    const normalized = normalizeResultForQuestion(q, raw);\n" +
+        "    console.log('[Global Exam Drag Normalize]', { raw, normalized, valid: structurallyValidResult(q, normalized) });\n" +
+        "    return normalized;\n" +
         "  };\n" +
         debugMarker
       );
