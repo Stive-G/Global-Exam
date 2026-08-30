@@ -12,6 +12,7 @@
   const questionReadingVersion = "6.4-question-reading-v1";
   const orderingStateFixVersion = "6.4-ordering-empty-target-v1";
   const orderingGrammarFixVersion = "6.4-ordering-grammar-v1";
+  const orderingCarouselFixVersion = "6.4-ordering-carousel-v1";
 
   if (window.__globalExamPager) {
     const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
@@ -448,6 +449,269 @@
     return code;
   };
 
+  const repairOrderingCarouselRobustness = (source) => {
+    let code = String(source || "");
+    const clickMarker = `  const clickOrderingItemRobust = async (q, original) => {`;
+    if (!code.includes(clickMarker)) {
+      throw new Error(`[Loader Global Exam] ${orderingCarouselFixVersion}: clickOrderingItemRobust introuvable.`);
+    }
+
+    const helpers = `  const ORDERING_CAROUSEL_FIX_VERSION = "${orderingCarouselFixVersion}";
+
+  const orderingPagerSnapshot = (q) => {
+    const root = q?.root?.isConnected ? q.root : document.body;
+    const instruction = findOrderingInstructionElement(root) || findOrderingInstructionElement(document.body);
+    const target = orderingTargetLive(q) || findOrderingTarget(root, instruction) || findOrderingTarget(document.body, instruction);
+    const selection = orderingSelectionState(document.body, instruction, target);
+    return { root, instruction, target, selection, items: selection?.remainingItems || [] };
+  };
+
+  const orderingBankSignature = (q) => orderingPagerSnapshot(q).items
+    .map((item) => norm(item?.text || ''))
+    .filter(Boolean)
+    .join('||');
+
+  const orderingPagerControls = (q) => {
+    const snap = orderingPagerSnapshot(q);
+    const rects = snap.items
+      .map((item) => item?.element)
+      .filter((el) => el?.isConnected && isVisible(el))
+      .map((el) => el.getBoundingClientRect());
+    if (!rects.length) return [];
+
+    const minLeft = Math.min(...rects.map((r) => r.left));
+    const maxRight = Math.max(...rects.map((r) => r.right));
+    const minTop = Math.min(...rects.map((r) => r.top));
+    const maxBottom = Math.max(...rects.map((r) => r.bottom));
+    const midX = (minLeft + maxRight) / 2;
+
+    return [...document.querySelectorAll("button,[role='button'],[tabindex]")]
+      .filter((el) => el?.isConnected && isVisible(el) && isEnabled(el) && !isAssistantElement(el))
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        const raw = String(controlText(el) || '').trim();
+        const label = normLoose([raw, el.getAttribute?.('aria-label') || '', el.getAttribute?.('title') || ''].join(' '));
+        const glyph = /^[←→‹›«»<>]+$/.test(raw);
+        const iconOnly = !raw && !!el.querySelector?.('svg,path,i');
+        const arrowWord = /(^| )(left|right|previous|prev|next|precedent|precedente|suivant|arrow)( |$)/.test(label);
+        const small = r.width >= 16 && r.width <= 78 && r.height >= 16 && r.height <= 72;
+        const sameBand = r.bottom >= minTop - 42 && r.top <= maxBottom + 42;
+        const closeHorizontally = r.right >= minLeft - 110 && r.left <= maxRight + 110;
+        if (!small || !sameBand || !closeHorizontally || !(glyph || iconOnly || arrowWord)) return null;
+
+        let direction = 0;
+        if (/(^| )(left|previous|prev|precedent|precedente)( |$)/.test(label) || /^[←‹«<]+$/.test(raw)) direction = -1;
+        else if (/(^| )(right|next|suivant)( |$)/.test(label) || /^[→›»>]+$/.test(raw)) direction = 1;
+        else direction = (r.left + r.width / 2) < midX ? -1 : 1;
+        return { element: el, direction, label: raw || label || (direction < 0 ? '←' : '→'), left: r.left };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.left - b.left);
+  };
+
+  const clickOrderingPagerControl = async (control) => {
+    const el = control?.element;
+    if (!el?.isConnected || !isVisible(el) || !isEnabled(el)) return false;
+    state.agent.internalClick = true;
+    try {
+      el.click();
+      state.clicks += 1;
+    } catch {
+      return false;
+    } finally {
+      setTimeout(() => { state.agent.internalClick = false; }, 0);
+    }
+    await wait(220);
+    return true;
+  };
+
+  const orderingFragmentActuallyReachable = (el) => {
+    if (!el?.isConnected || !isVisible(el) || !isEnabled(el)) return false;
+    const r = el.getBoundingClientRect();
+    if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) return false;
+    const x = Math.max(1, Math.min(innerWidth - 2, r.left + r.width / 2));
+    const y = Math.max(1, Math.min(innerHeight - 2, r.top + r.height / 2));
+    const hit = document.elementFromPoint(x, y);
+    return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+  };
+
+  const revealOrderingFragment = async (q, text) => {
+    let live = resolveLiveOrderingItem(q, text);
+    if (orderingFragmentActuallyReachable(live)) return live;
+
+    for (const direction of [1, -1, 1]) {
+      let stagnant = 0;
+      for (let step = 0; step < 14; step += 1) {
+        const control = orderingPagerControls(q).find((c) => c.direction === direction);
+        if (!control) break;
+        const before = orderingBankSignature(q);
+        if (!await clickOrderingPagerControl(control)) break;
+        live = resolveLiveOrderingItem(q, text);
+        if (orderingFragmentActuallyReachable(live)) {
+          console.log('[Global Exam Ordering] Fragment révélé via pagination:', text);
+          return live;
+        }
+        const after = orderingBankSignature(q);
+        stagnant = after === before ? stagnant + 1 : 0;
+        if (stagnant >= 2) break;
+      }
+    }
+    return resolveLiveOrderingItem(q, text);
+  };
+
+  const orderingCarouselItemKey = (item) => {
+    const el = item?.element;
+    const text = norm(item?.text || '');
+    if (!text) return '';
+    const stableAttrs = ['data-rbd-draggable-id','data-draggable-id','data-id','data-index','id'];
+    let stable = '';
+    for (const attr of stableAttrs) {
+      const value = el?.getAttribute?.(attr);
+      if (value) { stable = attr + '=' + value; break; }
+    }
+    return stable ? text + '::' + stable : text;
+  };
+
+  const enrichOrderingCarouselQuestion = async (q) => {
+    if (q?.type !== 'ordering') return q;
+    const initial = orderingPagerSnapshot(q);
+    if (Number(initial.selection?.selectedCount || 0) > 0) return q;
+    if (!orderingPagerControls(q).length) return q;
+
+    const moveToBoundary = async (direction, collect = null) => {
+      let stagnant = 0;
+      for (let step = 0; step < 16; step += 1) {
+        const control = orderingPagerControls(q).find((c) => c.direction === direction);
+        if (!control) break;
+        const before = orderingBankSignature(q);
+        if (!await clickOrderingPagerControl(control)) break;
+        const snap = orderingPagerSnapshot(q);
+        if (collect) collect(snap.items);
+        const after = orderingBankSignature(q);
+        stagnant = after === before ? stagnant + 1 : 0;
+        if (stagnant >= 2) break;
+      }
+    };
+
+    await moveToBoundary(-1);
+
+    const registry = new Map();
+    const signatures = new Set();
+    const collect = (items) => {
+      const sig = (items || []).map((item) => norm(item?.text || '')).filter(Boolean).join('||');
+      if (sig) signatures.add(sig);
+      for (const item of items || []) {
+        const key = orderingCarouselItemKey(item);
+        if (key && !registry.has(key)) registry.set(key, item);
+      }
+    };
+
+    collect(orderingPagerSnapshot(q).items);
+    await moveToBoundary(1, collect);
+
+    const allItems = [...registry.values()];
+    if (allItems.length >= (q.items?.length || 0) && allItems.length > 0) {
+      const previous = q.items?.length || 0;
+      q.items = allItems.map((item, index) => ({ ...item, index }));
+      q.remainingCount = q.items.length;
+      q.totalCount = q.items.length;
+      q._orderingCarouselScanned = true;
+      q._orderingCarouselPages = signatures.size;
+      q.key = makeQuestionKey(q);
+      if (q.items.length !== previous || signatures.size > 1) {
+        console.log('[Global Exam Ordering] Banque paginée lue en entier:', q.items.length + ' fragment(s), ' + signatures.size + ' page(s).', q.items.map((x) => x.text));
+      }
+    }
+    return q;
+  };
+
+`;
+    code = code.replace(clickMarker, helpers + clickMarker);
+
+    const oldClickOpen = `  const clickOrderingItemRobust = async (q, original) => {
+    let live = resolveLiveOrderingItem(q, original.text);
+    if (!live) return false;`;
+    const newClickOpen = `  const clickOrderingItemRobust = async (q, original) => {
+    let live = await revealOrderingFragment(q, original.text);
+    if (!live) {
+      log('Ordering: fragment introuvable même après parcours de la banque: ' + original.text);
+      return false;
+    }`;
+    if (!code.includes(oldClickOpen)) {
+      throw new Error(`[Loader Global Exam] ${orderingCarouselFixVersion}: ouverture clickOrderingItemRobust introuvable.`);
+    }
+    code = code.replace(oldClickOpen, newClickOpen);
+
+    const oldApplyClick = `          const ok = await clickOrderingItemRobust(q, original);
+          if (!ok) {
+            log(\`Ordering: clic non confirmé pour \${idx} (\${original.text}); Valider/Suivant bloqués.\`);
+            return false;
+          }
+          confirmedClicks += 1;
+          state.agent.partialMutation = true;
+          await wait(180);`;
+    const newApplyClick = `          let ok = false;
+          for (let clickAttempt = 0; clickAttempt < 3 && !ok; clickAttempt += 1) {
+            ok = await clickOrderingItemRobust(q, original);
+            if (!ok && clickAttempt < 2) {
+              log(\`Ordering: clic non confirmé pour \${idx} (\${original.text}); nouvelle tentative \${clickAttempt + 2}/3 après recherche dans la banque.\`);
+              await wait(260);
+            }
+          }
+          if (!ok) {
+            log(\`Ordering: clic non confirmé pour \${idx} (\${original.text}) après 3 tentatives; Valider/Suivant bloqués.\`);
+            return false;
+          }
+          confirmedClicks += 1;
+          state.agent.partialMutation = true;
+          await wait(180);`;
+    if (!code.includes(oldApplyClick)) {
+      throw new Error(`[Loader Global Exam] ${orderingCarouselFixVersion}: boucle clic ordering introuvable.`);
+    }
+    code = code.replace(oldApplyClick, newApplyClick);
+
+    const readingMarker = `    const questionReading = verifyQuestionReading(q);`;
+    if (!code.includes(readingMarker)) {
+      throw new Error(`[Loader Global Exam] ${orderingCarouselFixVersion}: contrôle lecture question introuvable.`);
+    }
+    code = code.replace(readingMarker, `    await enrichOrderingCarouselQuestion(q);\n` + readingMarker);
+
+    const oldEssential = `    const essential = [
+      ...(q?.choices || []).map((x) => x.text),
+      ...(q?.items || []).map((x) => x.text)
+    ].filter((x) => {`;
+    const newEssential = `    const essential = [
+      ...(q?.choices || []).map((x) => x.text),
+      ...((q?.type === 'ordering' && q?._orderingCarouselScanned) ? [] : (q?.items || []).map((x) => x.text))
+    ].filter((x) => {`;
+    if (!code.includes(oldEssential)) {
+      throw new Error(`[Loader Global Exam] ${orderingCarouselFixVersion}: contrôle présence DOM des items introuvable.`);
+    }
+    code = code.replace(oldEssential, newEssential);
+
+    const debugMarker = "  window.geUnblock = clearHardBlock;";
+    if (code.includes(debugMarker)) {
+      code = code.replace(
+        debugMarker,
+        `  window.geOrderingCarouselFixVersion = () => "${orderingCarouselFixVersion}";\n` +
+        `  window.geDebugOrderingCarousel = async () => {\n` +
+        `    const q = detectQuestion();\n` +
+        `    const before = orderingPagerSnapshot(q);\n` +
+        `    const controls = orderingPagerControls(q).map((c) => ({ direction: c.direction, label: c.label }));\n` +
+        `    if (q?.type === 'ordering' && Number(before.selection?.selectedCount || 0) === 0) await enrichOrderingCarouselQuestion(q);\n` +
+        `    const data = { type: q?.type, selected: before.selection?.selectedCount || 0, controls, pages: q?._orderingCarouselPages || 1, items: (q?.items || []).map((x, index) => ({ index, text: x.text })) };\n` +
+        `    console.log('[Global Exam Ordering Carousel]', data);\n` +
+        `    console.table(data.items);\n` +
+        `    return data;\n` +
+        `  };\n` +
+        debugMarker
+      );
+    }
+
+    console.log(`[Loader Global Exam] ${orderingCarouselFixVersion} appliqué : banque ordering paginée parcourue et fragments révélés avant clic.`);
+    return code;
+  };
+
   const assertSyntax = (code) => {
     try {
       new Function(String(code || ""));
@@ -568,6 +832,7 @@
   code = repairOrderingFalsePartialState(code);
   code = applyQuestionReadingGuard(code);
   code = repairOrderingGrammarQuality(code);
+  code = repairOrderingCarouselRobustness(code);
   assertSyntax(code);
   (0, eval)(code);
   installFeedbackSurveyGuard();
@@ -587,12 +852,13 @@
     questionReading: questionReadingVersion,
     orderingState: orderingStateFixVersion,
     orderingGrammar: orderingGrammarFixVersion,
+    orderingCarousel: orderingCarouselFixVersion,
   });
 
   console.log(
     `[Loader Global Exam] Chargé : assistant v${loaded} | ${expectedManualHotfix} | ` +
     `${expectedContextPatch} | ${expectedPageAudit} | ${pageAuditRecursionFixVersion} | ` +
     `${expectedFinalizePatch} | ${expectedQualityPatch} | ${questionReadingVersion} | ` +
-    `${orderingStateFixVersion} | ${orderingGrammarFixVersion}`
+    `${orderingStateFixVersion} | ${orderingGrammarFixVersion} | ${orderingCarouselFixVersion}`
   );
 })();
