@@ -1,371 +1,410 @@
 # Architecture et fonctionnement — Global Exam Assistant v6.4
 
-Ce document explique comment les fichiers du projet travaillent ensemble et comment une question passe de la page Global Exam à une réponse validée.
+Ce document décrit l’architecture effective actuelle. La base navigateur reste `global-exam-assistant-v6.3.js`, mais la version réellement exécutée est construite dynamiquement par `loader.js` avec plusieurs patches v6.4.
 
-## Vue d'ensemble
+## Vue d’ensemble
 
 ```text
-Global Exam dans le navigateur
+Global Exam / navigateur
         |
-        | Détection DOM / extraction question
+        | loader.js
         v
-global-exam-assistant-v6.3.js (base)
+assistant.js = base v6.3
         |
-        | runtime-patch-v6.4.js
+        +-> runtime-patch-v6.4
+        +-> runtime-hotfix-v6.4-content-loop
+        +-> runtime-context-v6.4
+        +-> runtime-page-audit-v6.4
+        +-> garde récursion page-audit
+        +-> runtime-finalize-v6.4
+        +-> runtime-quality-v6.4
+        +-> garde faux ordering partiel
+        +-> lecture DOM complète obligatoire
+        +-> garde grammatical ordering
+        |
+        | new Function(code) : contrôle syntaxique
+        v
+Assistant v6.4 effectif
         |
         | POST http://localhost:3000/api/chat
         v
-Nginx local (port 3000)
+Nginx local :3000
         |
         v
-multi-ai-proxy.mjs (Node, port interne 3001)
+multi-ai-proxy.mjs :3001
         |
-        +--> Groq
-        +--> OpenAI
-        +--> Gemini
-        +--> Anthropic Claude
-        +--> Mistral
-        +--> OpenRouter
-        |
-        v
-JSON normalisé
+        +-> Groq
+        +-> OpenAI
+        +-> Gemini
+        +-> Anthropic
+        +-> Mistral
+        +-> OpenRouter
         |
         v
-Vérification structurelle + consensus
+Réponse JSON normalisée
         |
         v
-Application dans le DOM
+Consensus / contrôle structurel
         |
         v
-Vérification DOM + audit pré-validation
+Application DOM
+        |
+        v
+Audit pré-validation
         |
         v
 Valider / Suivant / Terminer
 ```
 
-## Rôle des fichiers
+## 1. `loader.js`
 
-### `global-exam-assistant-v6.3.js`
+Le loader est le point d’entrée du Snippet DevTools.
 
-C'est la partie navigateur.
+Il :
 
-Responsabilités principales :
+1. refuse de charger une seconde instance sur la même page ;
+2. télécharge la base et tous les patches avec `cache: no-store` ;
+3. vérifie les versions attendues ;
+4. applique les patches dans un ordre déterministe ;
+5. ajoute plusieurs réparations directement dans le code généré ;
+6. vérifie la syntaxe avec `new Function(code)` ;
+7. évalue uniquement ensuite l’assistant final.
 
-1. détecter le type d'exercice ;
-2. extraire l'énoncé, les choix, les zones ou les champs ;
-3. construire un prompt structuré ;
-4. demander une réponse au proxy local ;
-5. comparer plusieurs analyses pour les exercices complexes ;
-6. appliquer la réponse dans les composants Global Exam ;
-7. vérifier que React/DOM a réellement enregistré l'interaction ;
-8. effectuer l'audit de sécurité ;
-9. respecter le rythme cible de l'activité ;
-10. valider et naviguer seulement après confirmation.
+Le loader expose `geRuntimeVersions()` pour contrôler toutes les couches réellement actives.
 
-Le script ne contient aucune clé API.
+## 2. Base navigateur `global-exam-assistant-v6.3.js`
 
-### `multi-ai-proxy.mjs`
+La base contient les primitives principales :
 
-C'est la couche serveur locale.
+- détection des types de questions ;
+- extraction des choix/items/zones/champs ;
+- sérialisation des questions ;
+- requêtes IA ;
+- normalisation initiale des résultats ;
+- consensus ;
+- interaction React/DOM ;
+- audit avant soumission ;
+- navigation ;
+- interface du panneau.
 
-Elle :
+Les corrections v6.4 ne dupliquent donc pas la base de plus de 200 Ko : elles la transforment au chargement.
+
+## 3. Patches runtime
+
+### `runtime-patch-v6.4.js`
+
+Compatibilité avec différentes variantes DOM Global Exam :
+
+- filtrage des chaînes i18n parasites ;
+- amélioration de la banque d’ordering ;
+- contrôles avant clic ;
+- robustesse des interactions selon les PC.
+
+### `runtime-hotfix-v6.4-content-loop.js`
+
+Gère notamment :
+
+- reprise après action manuelle ;
+- distinction entre phase `validated` et phase `transition` ;
+- pages de contenu passif ;
+- interdiction de `Passer` comme faux mécanisme de validation.
+
+### `runtime-context-v6.4.js`
+
+Maintient la mémoire utile de l’activité :
+
+- contenus pédagogiques vus précédemment ;
+- contexte du sujet ;
+- transcription lorsqu’elle existe ;
+- identité de l’activité.
+
+Un média sans transcription n’est jamais inventé.
+
+### `runtime-page-audit-v6.4.js`
+
+Scanne le `document.body` complet et relève notamment :
+
+- progression `N/Total` ;
+- radios/cases ;
+- champs ;
+- zones ;
+- ordering ;
+- boutons Valider/Suivant/Passer ;
+- correction visible ;
+- transcript ;
+- sélections déjà présentes.
+
+L’audit est utilisé avant traitement, navigation et certains clics sensibles.
+
+Le loader ajoute un garde spécifique afin que `pageDomAudit()` ne rappelle pas indirectement `looksLikeQuestionPage()` et ne crée plus de récursion infinie.
+
+### `runtime-finalize-v6.4.js`
+
+Responsabilités actuelles :
+
+- rythme par défaut de **15 minutes** ;
+- `Terminer/Finish` traité comme action finale uniquement sur la dernière question complète ;
+- exception DOM strictement limitée à cette finalisation ;
+- contexte complet des phrases de fill-word drag/drop ;
+- normalisation tolérante des placements drag/drop ;
+- média non requis pour les exercices textuels autonomes.
+
+### `runtime-quality-v6.4.js`
+
+Renforce la qualité IA :
+
+- sélection du contexte pertinent à la question courante ;
+- réinitialisation de l’identité de rythme lors d’un changement d’activité ;
+- labels sémantiques pour les zones de matching ;
+- limitation des votes aux fournisseurs réellement indépendants ;
+- stratégie adaptative fournisseur unique / multi-fournisseurs ;
+- réduction des appels inutiles ;
+- correction des faux états complets drag/drop.
+
+## 4. Gardes ajoutés par le loader
+
+### Lecture DOM complète
+
+Avant toute requête IA, `questionReadingSnapshot(q)` rassemble :
+
+```text
+progression
+consigne
+texte visible du bloc
+choix
+items
+zones
+champs/options
+lignes de matrice
+```
+
+Si un élément essentiel manque, l’automatisation se bloque avant l’appel IA.
+
+La lecture est également ajoutée au prompt sous `page_dom_reading`.
+
+### Ordering vide ≠ ordering partiel
+
+Certaines variantes Global Exam laissent un badge ou un élément interne dans une zone d’ordering visuellement vide.
+
+Le garde `6.4-ordering-empty-target-v1` n’accepte `selectedCount > 0` que s’il existe une vraie preuve sémantique qu’un fragment a été placé. Cela évite les fausses remises à zéro et les blocages associés.
+
+### Qualité grammaticale ordering
+
+Le garde `6.4-ordering-grammar-v1` ajoute une couche sémantique spécifique aux exercices de construction de phrases.
+
+Avant de convertir une réponse en clics :
+
+1. la phrase complète est reconstruite depuis l’ordre proposé ;
+2. la seconde IA reçoit la phrase candidate A et doit la critiquer grammaticalement ;
+3. l’arbitre reçoit les phrases candidates A et B, pas seulement leurs index ;
+4. les inversions évidentes d’une phrase déclarative commençant par une copule/auxiliaire sans sujet sont rejetées ;
+5. les règles de ponctuation, sujet/verbe, articles, accord et sens sont explicitement rappelées dans le prompt.
+
+Exemple ciblé :
+
+```text
+is when a interoperability solution can be ...   // rejeté
+interoperability is when a solution can be ...   // structure attendue
+```
+
+Le but du garde local n’est pas de remplacer l’IA par un parseur grammatical complet, mais d’empêcher les erreurs manifestes et de forcer une vraie critique multi-IA avant application.
+
+## 5. Cycle d’une question
+
+### Stabilisation
+
+La boucle attend un état DOM suffisamment stable.
+
+### Audit page
+
+`pageDomAudit()` détermine si une question, une correction ou une page passive est réellement visible.
+
+### Détection
+
+`detectQuestion()` classe la page :
+
+- `single-choice` ;
+- `multi-choice` ;
+- `button-choice` ;
+- `text` / `multi-text` ;
+- `select` / `multi-select` ;
+- `drag-drop` ;
+- `ordering` ;
+- `matching` ;
+- `matrix` ;
+- `feedback` ;
+- `none` ;
+- `unknown-question`.
+
+Une `unknown-question` bloque la navigation.
+
+### Lecture complète
+
+Le snapshot DOM est vérifié avant IA.
+
+### IA / consensus
+
+En mode `auto`, le navigateur transmet `provider_slot`.
+
+Avec plusieurs fournisseurs :
+
+```text
+slot 0 -> analyse principale
+slot 1 -> contre-vérification
+slot 2 -> arbitrage si désaccord
+```
+
+Avec un seul fournisseur, le moteur peut éviter la deuxième requête si la structure et la confiance sont très fortes. En cas de 429 temporaire, le proxy peut attendre puis réessayer selon les réglages.
+
+Avec plusieurs fournisseurs, un 429 provoque normalement un fallback vers une autre IA disponible.
+
+## 6. `multi-ai-proxy.mjs`
+
+Le proxy :
 
 - lit les clés depuis `.env` ;
-- choisit un fournisseur ;
-- transforme la requête vers le format de son API ;
-- demande une sortie JSON structurée ;
-- normalise la réponse vers un format commun proche de Chat Completions ;
-- bascule vers une autre IA si le fournisseur courant échoue ;
-- renvoie au navigateur le nom du fournisseur et du modèle réellement utilisés.
+- ne les expose jamais au navigateur ;
+- choisit le fournisseur demandé ou le slot automatique ;
+- convertit le prompt vers l’API correspondante ;
+- demande du JSON structuré ;
+- gère les timeouts ;
+- extrait `Retry-After` / reset quota ;
+- maintient un cooldown temporaire ;
+- effectue le fallback si autorisé ;
+- renvoie fournisseur et modèle effectivement utilisés.
 
-### `docker-compose.yml`
-
-Lance deux conteneurs :
-
-- `global-exam-ai-proxy` : Node 22 ;
-- `global-exam-proxy` : Nginx exposé sur `localhost:3000`.
-
-### `nginx.conf`
-
-A deux fonctions :
-
-1. ajouter les en-têtes CORS nécessaires au navigateur ;
-2. router `/api/chat`, `/health`, etc. vers Node.
-
-Il expose également le script via :
-
-```text
-http://localhost:3000/assistant.js
-```
-
-C'est ce qui permet à `loader.js` de rester très court.
-
-### `.env`
-
-Fichier local non versionné contenant les secrets.
-
-Il peut contenir une ou plusieurs clés. Le proxy ignore les fournisseurs dont la clé est vide.
-
-### `loader.js`
-
-Bootstrap minimal pour DevTools.
-
-Il télécharge la base du script servie par Nginx, charge `runtime-patch-v6.4.js`, applique le patch en mémoire puis évalue la version finale dans le contexte de la page Global Exam.
-
-## Cycle d'une question
-
-### 1. Stabilisation
-
-Le script attend que la page cesse de muter pendant un court instant.
-
-### 2. Détection
-
-`detectQuestion()` cherche d'abord les états spéciaux :
-
-- correction/résultat ;
-- réponse déjà présente ;
-- ordering ;
-- drag/drop ou placement par clic ;
-- radio/checkbox ;
-- texte ;
-- select/combobox ;
-- matching/matrix ;
-- absence de question ;
-- type inconnu.
-
-L'ordre des détecteurs est important. Les consignes explicites d'ordering/placement passent avant le fallback `button-choice`.
-
-### 3. Sérialisation
-
-Le DOM brut n'est jamais envoyé tel quel.
-
-Le script transforme la question en données utiles :
-
-```json
-{
-  "type": "ordering",
-  "prompt": "...",
-  "items": [
-    {"index": 0, "text": "when"},
-    {"index": 1, "text": "was"}
-  ]
-}
-```
-
-### 4. Routage multi-IA
-
-En mode `auto`, le navigateur envoie un `provider_slot`.
-
-Pour une question complexe :
-
-```text
-slot 0 -> première analyse
-slot 1 -> seconde analyse indépendante
-slot 2 -> arbitrage en cas de désaccord
-```
-
-Le proxy fait correspondre les slots aux clés réellement configurées. Avec deux clés, le troisième slot revient cycliquement sur la première. Avec une seule clé, tous les slots utilisent le même fournisseur.
-
-Si `AI_FALLBACK=true`, une erreur réseau, limite ou erreur fournisseur entraîne un essai sur le fournisseur suivant.
-
-## Adaptateurs fournisseurs
+## 7. Adaptateurs
 
 ### Groq / OpenAI / OpenRouter
 
-Format Chat Completions compatible OpenAI. Le proxy demande un `json_schema` strict lorsque le fournisseur/modèle le permet.
-
-### Mistral
-
-Endpoint de chat compatible. Le proxy utilise le mode JSON pour maximiser la compatibilité entre modèles.
+API compatible Chat Completions avec `json_schema` strict lorsque disponible.
 
 ### Gemini
 
-Le proxy convertit les messages vers `generateContent` et demande une réponse JSON conforme au schéma attendu.
+`generateContent` avec `responseMimeType: application/json` et schéma adapté.
 
-### Anthropic Claude
+### Mistral
 
-Le proxy utilise l'API Messages et un outil forcé `submit_answer` dont `input_schema` correspond au type de question. L'entrée de l'outil devient la réponse JSON normalisée.
+Chat Completions en `json_object`. Comme le schéma est moins strict côté API, les prompts et normalisations navigateur sont renforcés.
 
-## Consensus
+### Anthropic
 
-Les types simples n'ont pas systématiquement besoin de trois appels.
+API Messages avec outil `submit_answer` forcé et `input_schema` correspondant au type d’exercice.
 
-Pour les types complexes :
+## 8. Drag/drop / matching
 
-- A et B identiques -> consensus `2/2` ;
-- A et B différents -> appel d'arbitrage ;
-- arbitre = A ou B -> consensus `2/3` ;
-- troisième réponse différente -> acceptée seulement avec les garde-fous de confiance et de structure ;
-- sortie invalide -> réparation ou blocage.
+Deux variantes principales sont traitées.
 
-Le panneau affiche les fournisseurs réellement impliqués lorsque cette information est disponible.
+### Matching définition ↔ terme
 
-## Application des réponses
-
-### QCM
-
-Le script réacquiert les inputs après les rerenders React et vérifie l'état `checked`/ARIA final.
-
-### Drag/drop Global Exam
-
-Pour les variantes observées, le site effectue le placement quand l'utilisateur clique sur le mot. Le script utilise donc `click-auto-drop`, pas un drag artificiel.
-
-### Ordering
-
-Le site ajoute les fragments dans l'ordre des clics.
-
-Le script :
-
-1. clique les fragments séquentiellement ;
-2. vérifie chaque mutation ;
-3. vérifie l'ordre final ;
-4. vérifie qu'il ne reste aucun fragment dans la banque.
-
-## Correction v6.3 : ordering partiel
-
-Le problème observé était :
+La zone reçoit un label sémantique, par exemple :
 
 ```text
-plusieurs fragments déjà placés
-+ un clic tardif échoue
--> ancienne version réanalyse seulement le dernier fragment
--> la phrase partielle peut déjà être fausse
+Zone 1 — cible: RJ45
+Zone 2 — cible: Port
+Zone 3 — cible: WiFi
 ```
 
-v6.3 ne considère plus un ordering partiel comme un état sûr à conserver.
+### Fill in the blanks
 
-Il tente une remise à zéro confirmée :
+La position exacte du trou est envoyée :
 
-- bouton local undo/reset si détecté près de la zone ;
-- sinon clic sur le dernier fragment sélectionné si le composant le permet ;
-- vérification après chaque retrait : `selectedCount` doit baisser ou `remainingCount` augmenter.
+```text
+Servers [[ZONE_0]] data with computers called clients.
+Those clients can [[ZONE_1]] to the network through cables.
+```
 
-Si aucune remise à zéro n'est confirmée, le script bloque au lieu de valider.
+Les résultats IA sont normalisés vers `{item, zone}` 0-based, y compris lorsque certains fournisseurs utilisent des libellés ou du 1-based.
 
-## Correction v6.3 : petits mots
+## 9. Ordering
 
-Les anciennes vérifications utilisaient parfois :
+Global Exam ajoute les fragments dans l’ordre des clics.
+
+Le pipeline actuel vérifie :
+
+- banque de fragments complète ;
+- absence de faux fragment déjà placé ;
+- réponse IA = permutation complète ;
+- contrôle grammatical local conservateur ;
+- contre-vérification avec phrase candidate reconstruite ;
+- arbitrage avec phrases A/B en cas de désaccord ;
+- clic de chaque fragment confirmé ;
+- aucun fragment restant ;
+- ordre final présent dans la zone ;
+- `?` final si applicable.
+
+## 10. Pages de correction / résultat
+
+Les bandeaux `Bravo`, `Presque`, `Pas d’inquiétude`, ainsi que les onglets `Vos réponses / Correction / Explication`, sont utilisés pour reconnaître une correction même lorsque les anciens contrôles restent dans le DOM.
+
+Une page de correction ne lance aucune IA.
+
+## 11. Audit pré-validation
+
+Une réponse n’est pas soumise simplement parce que le JSON IA est valide.
+
+L’audit exige notamment :
+
+- réponse appliquée et confirmée ;
+- résultat structurel valide ;
+- contrôle des choix sélectionnés ;
+- champs obligatoires remplis ;
+- aucune zone vide ;
+- aucun fragment ordering restant ;
+- progression cohérente ;
+- absence de bouton `Passer` utilisé comme soumission implicite.
+
+## 12. Finalisation
+
+Sur la dernière question seulement, `Terminer` / `Finish` peut être l’action qui crée elle-même l’état soumis.
+
+Le script l’autorise uniquement si :
+
+- progression `N/N` ;
+- réponse complète ;
+- application DOM confirmée ;
+- aucun `Valider` ;
+- aucun `Passer` ;
+- audit final réussi.
+
+## 13. Rythme
+
+Le rythme par défaut est désormais :
+
+```text
+15 min minimum
+15 min maximum
+```
+
+Le temps attendu est réparti selon la progression de l’activité. Une action manuelle peut interrompre une attente et réveiller immédiatement la boucle.
+
+## 14. Sécurité des clés
+
+```text
+Navigateur : aucune clé
+Docker/.env : clés API
+```
+
+`.env` reste ignoré par Git et ne doit jamais être versionné.
+
+## 15. Diagnostics principaux
 
 ```js
-targetText.includes("in")
+geRuntimeVersions()
+geDebugDomPage()
+geDebugQuestionReading()
+geDebugAiProviders()
+geDebugRelevantContext()
+geDebugOrderingCount()
+geDebugOrderingGrammar()
+geDebugDragFillState()
+geDebugDragSentenceContexts()
 ```
 
-C'est dangereux car `in` existe à l'intérieur de `protecting`.
+## 16. Limites connues
 
-La nouvelle vérification utilise des limites de mots et un comptage d'occurrences. Un clic n'est confirmé que si le fragment exact apparaît réellement comme fragment supplémentaire ou si sa source quitte la banque de manière confirmée.
-
-La même logique est utilisée pour vérifier la séquence finale.
-
-## Audit pré-validation
-
-Même une réponse IA valide ne suffit pas.
-
-`preValidationAudit()` vérifie notamment :
-
-- application DOM confirmée ;
-- confiance/consensus ;
-- nombre de choix sélectionnés ;
-- correspondance exacte avec la réponse calculée ;
-- champs obligatoires ;
-- zones vides ;
-- fragments d'ordering encore disponibles ;
-- présence du `?` final lorsque la question contient une tuile `?` ;
-- matrice complète.
-
-Seulement après cet audit un clic automatique sur Valider/Suivant/Terminer est autorisé.
-
-## Gestion des réponses déjà présentes
-
-Le script mémorise l'identité stable de la page et inspecte le DOM avant de relancer l'IA.
-
-Cela évite le cas où un exercice déjà rempli est ensuite redétecté comme `button-choice` parce que React a changé sa structure.
-
-## Reprise après clic manuel
-
-Le listener de clic distingue :
-
-- clics internes au script ;
-- clics de l'utilisateur.
-
-Si l'utilisateur valide, passe ou navigue manuellement alors que Auto est ON, le script :
-
-1. laisse le clic se produire ;
-2. supprime les blocages/résultats devenus obsolètes ;
-3. attend le nouvel état ;
-4. réveille ou relance la boucle automatique.
-
-## Rythme de 30 minutes
-
-Le rythme par défaut est :
-
-```text
-30 min minimum
-30 min maximum
-```
-
-Le script choisit donc exactement 30 minutes comme cible.
-
-Pour une activité à 13 étapes, il calcule un temps cumulé attendu à chaque progression `N/13`. S'il a répondu trop vite, il attend avant la soumission afin de rester proche de la trajectoire des 30 minutes.
-
-Si le script est chargé en cours d'activité, il estime le temps déjà écoulé à partir de la progression actuelle au lieu d'ajouter 30 minutes complètes.
-
-## Interface réductible
-
-`renderPanel()` conserve un état `panelCollapsed`.
-
-En mode réduit, seuls restent visibles :
-
-- le titre ;
-- Auto ON/OFF ;
-- le dernier fournisseur ;
-- le bouton `+`.
-
-La logique d'automatisation continue normalement.
-
-## Sécurité des clés
-
-La règle est simple :
-
-```text
-Navigateur -> aucune clé
-Docker/.env -> clés API
-```
-
-`.env` est inclus dans `.gitignore` et ne doit jamais être commité.
-
-## Limites connues
-
-- Les interfaces Global Exam peuvent évoluer : les détecteurs sont basés sur le DOM observé.
-- Les événements synthétiques ne sont pas toujours équivalents à un clic `isTrusted`; plusieurs stratégies React/DOM et des vérifications fortes sont donc utilisées.
-- Le proxy IA ne contourne pas les restrictions CORS du CDN audio Global Exam.
-- Si un contenu audio n'est ni accessible ni transcrit dans le DOM, l'IA ne dispose pas magiquement de cet audio.
-- Les modèles et tarifs des fournisseurs changent : les noms de modèles restent configurables dans `.env`.
-
-## v6.3 — Vérification robuste des `button-choice`
-
-Un `button-choice` n'est plus validé seulement parce que la classe CSS du bouton a changé.
-
-Pour les exercices où un clic remplit un trou, l'assistant prend un snapshot avant le clic puis vérifie après le clic :
-
-1. si le texte attendu apparaît dans une zone de réponse ;
-2. si le nombre de zones vides diminue ;
-3. si le contrôle passe en état `selected`, `pressed` ou `checked` ;
-4. si la puce disparaît de la banque en même temps que le DOM de la question change.
-
-La recherche de la puce est refaite dans le DOM avant chaque tentative afin de supporter les re-renders React.
-
-L'audit pré-validation considère maintenant aussi le cas d'un **seul trou** pour les consignes `Fill in the blank...`. Une zone vide suffit alors à bloquer `Valider`.
-
-## Compatibilité runtime v6.4
-
-La v6.4 conserve `global-exam-assistant-v6.3.js` comme source de base et applique un patch source avant `eval` via `loader.js`. Cette stratégie évite de dupliquer un fichier de plus de 200 Ko tout en gardant un correctif versionné et vérifiable.
-
-`runtime-patch-v6.4.js` effectue des remplacements stricts : si un bloc attendu de la base v6.3 est absent, le chargement échoue au lieu d’exécuter un assistant partiellement patché.
-
-Le patch corrige les différences de DOM observées sur certains PC :
-
-- clés de traduction internes (`feedback_form.*`) exclues des réponses ;
-- candidats d’ordering restreints à la banque locale ;
-- comptage des fragments sélectionnés limité aux vraies puces/boutons ;
-- contrôle de sécurité avant chaque clic d’ordering ;
-- commande `geDebugOrderingCandidates()`.
+- Global Exam peut modifier son DOM ; les détecteurs doivent rester conservateurs.
+- Les événements synthétiques ne sont pas identiques à des clics `isTrusted` ; chaque application est donc vérifiée après interaction.
+- Le proxy local ne contourne pas les restrictions CORS du CDN audio Global Exam.
+- Une transcription absente reste inconnue ; un média visible ne suffit pas à inventer son contenu.
+- Le contrôle grammatical local d’ordering cible les erreurs manifestes ; le jugement complet repose toujours sur les fournisseurs IA et le consensus.
