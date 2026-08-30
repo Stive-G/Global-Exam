@@ -10,6 +10,7 @@
   const expectedFinalizePatch = "6.4-finalize-v1";
   const expectedQualityPatch = "6.4-quality-v1";
   const questionReadingVersion = "6.4-question-reading-v1";
+  const orderingStateFixVersion = "6.4-ordering-empty-target-v1";
 
   if (window.__globalExamPager) {
     const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
@@ -70,6 +71,78 @@
       `[Loader Global Exam] ${pageAuditRecursionFixVersion} appliqué : ` +
       `pageDomAudit ne rappelle plus looksLikeQuestionPage().`
     );
+    return code;
+  };
+
+  // Global Exam peut laisser dans la zone d'ordering vide un badge/élément interne
+  // (souvent numérique). L'ancien comptage le prenait pour un fragment déjà placé,
+  // puis tentait de l'annuler et bloquait toute la question. On exige désormais une
+  // preuve textuelle/visuelle sémantique avant de déclarer selectedCount > 0.
+  const repairOrderingFalsePartialState = (source) => {
+    let code = String(source || "");
+    const before = `    return {
+      target: liveTarget,
+      remainingItems,
+      remainingCount: remainingItems.length,
+      selectedCount,
+      selectedTexts,
+      totalCount: selectedCount + remainingItems.length,
+    };
+  };
+
+  const detectInstructionOrdering = (root) => {`;
+
+    const after = `    if (liveTarget && selectedCount > 0) {
+      const isMeaningfulOrderingPlacedText = (value) => {
+        const raw = String(value || '').replace(/\\s+/g, ' ').trim();
+        const loose = normLoose(raw);
+        if (!raw || !loose || /^\\d{1,2}$/.test(raw)) return false;
+        if (isExerciseUiNoiseText(raw)) return false;
+        if (/^(drop|drag|place|answer|response|your answer|your response|votre reponse|zone|target|result|resultat|phrase|sentence|here|ici)(\\b|$)/.test(loose)) return false;
+        return true;
+      };
+
+      const directText = String(zoneDirectText(liveTarget) || '').replace(/\\s+/g, ' ').trim();
+      const semanticSelected = (selectedTexts || []).filter(isMeaningfulOrderingPlacedText);
+      const visualSemantic = orderingVisualSelectedTexts(liveTarget).filter(isMeaningfulOrderingPlacedText);
+      const hasSemanticEvidence =
+        isMeaningfulOrderingPlacedText(directText) ||
+        semanticSelected.length > 0 ||
+        visualSemantic.length > 0;
+
+      if (!hasSemanticEvidence) {
+        console.log('[Global Exam Ordering] Faux fragment déjà placé ignoré : cible visuellement vide.');
+        selectedCount = 0;
+        selectedTexts = [];
+      }
+    }
+
+    return {
+      target: liveTarget,
+      remainingItems,
+      remainingCount: remainingItems.length,
+      selectedCount,
+      selectedTexts,
+      totalCount: selectedCount + remainingItems.length,
+    };
+  };
+
+  const detectInstructionOrdering = (root) => {`;
+
+    if (!code.includes(before)) {
+      throw new Error(`[Loader Global Exam] ${orderingStateFixVersion}: bloc orderingSelectionState introuvable.`);
+    }
+    code = code.replace(before, after);
+
+    const debugMarker = "  window.geUnblock = clearHardBlock;";
+    if (code.includes(debugMarker)) {
+      code = code.replace(
+        debugMarker,
+        `  window.geOrderingStateFixVersion = () => "${orderingStateFixVersion}";\n` + debugMarker
+      );
+    }
+
+    console.log(`[Loader Global Exam] ${orderingStateFixVersion} appliqué : cible ordering vide ≠ fragment déjà placé.`);
     return code;
   };
 
@@ -397,6 +470,7 @@
   code = repairPageAuditRecursion(code);
   code = window.__applyGlobalExamV64FinalizePatch(code);
   code = window.__applyGlobalExamV64QualityPatch(code);
+  code = repairOrderingFalsePartialState(code);
   code = applyQuestionReadingGuard(code);
   assertSyntax(code);
   (0, eval)(code);
@@ -417,11 +491,12 @@
     finalize: expectedFinalizePatch,
     quality: expectedQualityPatch,
     questionReading: questionReadingVersion,
+    orderingState: orderingStateFixVersion,
   });
 
   console.log(
     `[Loader Global Exam] Chargé : assistant v${loaded} | ${expectedManualHotfix} | ` +
     `${expectedContextPatch} | ${expectedPageAudit} | ${pageAuditRecursionFixVersion} | ` +
-    `${expectedFinalizePatch} | ${expectedQualityPatch} | ${questionReadingVersion}`
+    `${expectedFinalizePatch} | ${expectedQualityPatch} | ${questionReadingVersion} | ${orderingStateFixVersion}`
   );
 })();
