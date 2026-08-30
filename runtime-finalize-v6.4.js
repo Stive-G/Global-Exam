@@ -33,6 +33,29 @@
       },`;
     code = replaceOnce(code, "rythme par défaut 15 minutes", oldPacingDefaults, newPacingDefaults);
 
+    // Un lecteur audio présent sur la page ne signifie pas que chaque exercice en
+    // dépend. Pour les fill-words/ordering dont tout le contenu utile est visible,
+    // ne pas plafonner artificiellement la confiance à 45 %.
+    const oldMediaCap = `          const mediaContext = currentMediaContextState();
+          if (mediaContext.hasMedia && !mediaContext.hasTranscript) {
+            result.confidence = Math.min(result.confidence, 0.45);
+            result.explanation = (result.explanation ? result.explanation + ' ' : '') + '[Confiance plafonnée : média présent sans transcription exploitable.]';
+          }`;
+    const newMediaCap = `          const mediaContext = currentMediaContextState();
+          let visibleExerciseSelfContained = false;
+          try {
+            visibleExerciseSelfContained =
+              (q?.type === 'drag-drop' && isFillWordsInstruction() && (q.items?.length || 0) > 0 && (q.zones?.length || 0) > 0) ||
+              (q?.type === 'ordering' && (q.items?.length || 0) >= 2);
+          } catch {}
+          if (mediaContext.hasMedia && !mediaContext.hasTranscript && !visibleExerciseSelfContained) {
+            result.confidence = Math.min(result.confidence, 0.45);
+            result.explanation = (result.explanation ? result.explanation + ' ' : '') + '[Confiance plafonnée : média présent sans transcription exploitable.]';
+          } else if (mediaContext.hasMedia && !mediaContext.hasTranscript && visibleExerciseSelfContained) {
+            result.explanation = (result.explanation ? result.explanation + ' ' : '') + '[Question textuelle autonome : le média sans transcription n’est pas requis pour résoudre cet exercice.]';
+          }`;
+    code = replaceOnce(code, "média non requis pour exercice textuel autonome", oldMediaCap, newMediaCap);
+
     // Les fill-in-the-blanks en drag/drop ont besoin de la phrase autour du trou,
     // pas seulement du morceau de texte placé avant la zone. On enrichit q.zones
     // juste après detectQuestion(), avant toute lecture DOM ou requête IA.
