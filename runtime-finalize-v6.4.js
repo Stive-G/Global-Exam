@@ -20,6 +20,19 @@
       `  const FINALIZE_RUNTIME_VERSION = "${FINALIZE_PATCH_VERSION}";\n\n` + detectMarker
     );
 
+    // Rythme par défaut : une activité vise désormais 15 minutes au lieu de 30.
+    const oldPacingDefaults = `      activityPacing: {
+        enabled: true,
+        minMinutes: 30,
+        maxMinutes: 30,
+      },`;
+    const newPacingDefaults = `      activityPacing: {
+        enabled: true,
+        minMinutes: 15,
+        maxMinutes: 15,
+      },`;
+    code = replaceOnce(code, "rythme par défaut 15 minutes", oldPacingDefaults, newPacingDefaults);
+
     // Exception strictement limitée à la dernière question : sur Global Exam,
     // certains exercices n'affichent pas Valider à N/N. Le bouton Terminer/Finish
     // est alors l'action de soumission finale. On ne l'autorise que si la réponse
