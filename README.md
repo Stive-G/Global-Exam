@@ -166,7 +166,8 @@ geSetProvider("openrouter")
 geSetModel("nom-du-modele")  // forcer un modèle
 geSetModel("auto")           // revenir au modèle automatique
 
-// Version / diagnostic\ ngeVersion()                  // version principale
+// Version / diagnostic
+geVersion()                  // version principale
 geRuntimeVersions()          // versions des patches chargés
 geDebugQuestion()            // question détectée
 geDebugPageState()           // état de la page
