@@ -44,11 +44,13 @@
   - deuxième IA utilisée comme critique grammaticale de la phrase candidate ;
   - arbitre informé des phrases candidates A et B, pas seulement des index ;
   - rejet local conservateur des inversions manifestes sujet/copule dans une phrase déclarative.
-- Nouveau garde `6.4-ordering-carousel-v1` pour les banques de fragments paginées :
-  - parcours automatique des flèches gauche/droite avant l’analyse afin de récupérer tous les fragments, même ceux hors écran ;
-  - recherche automatique d’un fragment dans les différentes pages du carrousel avant chaque clic ;
+- Garde `6.4-ordering-carousel-v2` pour les banques de fragments paginées/virtualisées :
+  - la pagination est évaluée à partir des fragments réellement accessibles à l’écran, et non de tous les éléments DOM virtuels ;
+  - plusieurs balayages gauche → droite → gauche → droite sont effectués avant l’analyse afin de récupérer les fragments qui n’apparaissent qu’après plusieurs défilements ;
+  - une vue identique doit rester stable plusieurs fois avant d’être considérée comme une extrémité du carrousel ;
+  - recherche automatique d’un fragment dans les différentes vues avant chaque clic ;
   - jusqu’à trois tentatives de clic avant de déclarer l’interaction impossible ;
-  - évite le cas fréquent où un premier fragment est placé puis le second devient hors écran, provoquant un ordering partiel impossible à réinitialiser.
+  - corrige le cas où l’IA ne recevait que 6 fragments alors qu’un 7e (`an email,` par exemple) n’apparaissait qu’après consommation des autres fragments.
 - Ajout de `geDebugOrderingGrammar()` et `geDebugOrderingCarousel()`.
 
 ### Finalisation et rythme
@@ -95,7 +97,7 @@ base v6.3
 -> garde faux ordering partiel
 -> lecture DOM complète
 -> garde grammatical ordering
--> garde banque ordering paginée
+-> garde banque ordering paginée/virtualisée
 -> contrôle syntaxique
 -> exécution v6.4
 ```
