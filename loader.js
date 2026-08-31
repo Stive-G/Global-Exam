@@ -12,7 +12,7 @@
   const questionReadingVersion = "6.4-question-reading-v1";
   const orderingStateFixVersion = "6.4-ordering-empty-target-v1";
   const orderingGrammarFixVersion = "6.4-ordering-grammar-v1";
-  const orderingCarouselFixVersion = "6.4-ordering-carousel-v1";
+  const orderingCarouselFixVersion = "6.4-ordering-carousel-v2";
 
   if (window.__globalExamPager) {
     const loaded = window.__GLOBAL_EXAM_ASSISTANT_VERSION || "ancienne/inconnue";
@@ -467,13 +467,16 @@
   };
 
   const orderingBankSignature = (q) => orderingPagerSnapshot(q).items
+    .filter((item) => orderingFragmentActuallyReachable(item?.element))
     .map((item) => norm(item?.text || ''))
     .filter(Boolean)
     .join('||');
 
   const orderingPagerControls = (q) => {
     const snap = orderingPagerSnapshot(q);
-    const rects = snap.items
+    const reachableItems = snap.items.filter((item) => orderingFragmentActuallyReachable(item?.element));
+    const geometryItems = reachableItems.length ? reachableItems : snap.items;
+    const rects = geometryItems
       .map((item) => item?.element)
       .filter((el) => el?.isConnected && isVisible(el))
       .map((el) => el.getBoundingClientRect());
@@ -541,7 +544,7 @@
 
     for (const direction of [1, -1, 1]) {
       let stagnant = 0;
-      for (let step = 0; step < 14; step += 1) {
+      for (let step = 0; step < 24; step += 1) {
         const control = orderingPagerControls(q).find((c) => c.direction === direction);
         if (!control) break;
         const before = orderingBankSignature(q);
@@ -553,7 +556,7 @@
         }
         const after = orderingBankSignature(q);
         stagnant = after === before ? stagnant + 1 : 0;
-        if (stagnant >= 2) break;
+        if (stagnant >= 6) break;
       }
     }
     return resolveLiveOrderingItem(q, text);
@@ -580,7 +583,7 @@
 
     const moveToBoundary = async (direction, collect = null) => {
       let stagnant = 0;
-      for (let step = 0; step < 16; step += 1) {
+      for (let step = 0; step < 32; step += 1) {
         const control = orderingPagerControls(q).find((c) => c.direction === direction);
         if (!control) break;
         const before = orderingBankSignature(q);
@@ -589,7 +592,7 @@
         if (collect) collect(snap.items);
         const after = orderingBankSignature(q);
         stagnant = after === before ? stagnant + 1 : 0;
-        if (stagnant >= 2) break;
+        if (stagnant >= 6) break;
       }
     };
 
@@ -598,7 +601,8 @@
     const registry = new Map();
     const signatures = new Set();
     const collect = (items) => {
-      const sig = (items || []).map((item) => norm(item?.text || '')).filter(Boolean).join('||');
+      const reachable = (items || []).filter((item) => orderingFragmentActuallyReachable(item?.element));
+      const sig = reachable.map((item) => norm(item?.text || '')).filter(Boolean).join('||');
       if (sig) signatures.add(sig);
       for (const item of items || []) {
         const key = orderingCarouselItemKey(item);
@@ -607,6 +611,8 @@
     };
 
     collect(orderingPagerSnapshot(q).items);
+    await moveToBoundary(1, collect);
+    await moveToBoundary(-1, collect);
     await moveToBoundary(1, collect);
 
     const allItems = [...registry.values()];
@@ -619,7 +625,7 @@
       q._orderingCarouselPages = signatures.size;
       q.key = makeQuestionKey(q);
       if (q.items.length !== previous || signatures.size > 1) {
-        console.log('[Global Exam Ordering] Banque paginée lue en entier:', q.items.length + ' fragment(s), ' + signatures.size + ' page(s).', q.items.map((x) => x.text));
+        console.log('[Global Exam Ordering] Banque paginée lue en entier:', q.items.length + ' fragment(s), ' + signatures.size + ' vue(s) réellement accessibles.', q.items.map((x) => x.text));
       }
     }
     return q;
@@ -699,7 +705,8 @@
         `    const before = orderingPagerSnapshot(q);\n` +
         `    const controls = orderingPagerControls(q).map((c) => ({ direction: c.direction, label: c.label }));\n` +
         `    if (q?.type === 'ordering' && Number(before.selection?.selectedCount || 0) === 0) await enrichOrderingCarouselQuestion(q);\n` +
-        `    const data = { type: q?.type, selected: before.selection?.selectedCount || 0, controls, pages: q?._orderingCarouselPages || 1, items: (q?.items || []).map((x, index) => ({ index, text: x.text })) };\n` +
+        `    const after = orderingPagerSnapshot(q);\n` +
+        `    const data = { type: q?.type, selected: before.selection?.selectedCount || 0, controls, pages: q?._orderingCarouselPages || 1, reachable: after.items.filter((x) => orderingFragmentActuallyReachable(x?.element)).map((x) => x.text), items: (q?.items || []).map((x, index) => ({ index, text: x.text })) };\n` +
         `    console.log('[Global Exam Ordering Carousel]', data);\n` +
         `    console.table(data.items);\n` +
         `    return data;\n` +
@@ -708,7 +715,7 @@
       );
     }
 
-    console.log(`[Loader Global Exam] ${orderingCarouselFixVersion} appliqué : banque ordering paginée parcourue et fragments révélés avant clic.`);
+    console.log(`[Loader Global Exam] ${orderingCarouselFixVersion} appliqué : carrousel virtualisé parcouru par vues réellement accessibles avant IA et avant clic.`);
     return code;
   };
 
