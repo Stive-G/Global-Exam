@@ -1,6 +1,6 @@
 (() => {
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
-  const HOLISTIC_PATCH_VERSION = "6.4-holistic-drag-passive-v2";
+  const HOLISTIC_PATCH_VERSION = "6.4-holistic-drag-passive-v3";
 
   const xhr = new XMLHttpRequest();
   xhr.open("GET", `http://localhost:3000/runtime-quality-base-v6.4.js?v=${Date.now()}`, false);
@@ -61,17 +61,15 @@
       (progressed && questionHint && (validateButtons.length > 0 || passButtons.length > 0))
     );`;
 
-    // Les versions récentes de runtime-quality appliquent déjà un garde passif plus
-    // strict (PASSIVE_PAGE_RUNTIME_VERSION). Ne jamais faire échouer tout le loader
-    // simplement parce que l'ancien bloc exact a déjà été remplacé en amont.
     if (code.includes(oldAuditBlock)) {
       code = replaceOnce(code, "audit passif sans faux unknown-question", oldAuditBlock, newAuditBlock);
     } else if (
       code.includes('const PASSIVE_PAGE_RUNTIME_VERSION = "6.4-passive-page-guard-v3"') ||
       code.includes('const directResponseControls =') ||
-      code.includes('const buttonResponseEvidence =')
+      code.includes('const buttonResponseEvidence =') ||
+      code.includes('const semanticStrongControls =')
     ) {
-      console.log('[Global Exam Quality Wrapper] Garde page passive déjà appliqué par la qualité de base; compatibilité v2 active.');
+      console.log('[Global Exam Quality Wrapper] Garde page passive déjà appliqué; aucun repatch nécessaire.');
     } else {
       throw new Error(`[Quality ${HOLISTIC_PATCH_VERSION}] Aucun garde passif compatible détecté.`);
     }
@@ -129,7 +127,13 @@
   };
 
 `;
-    code = replaceOnce(code, "helpers passage complet drag-drop", enrichMarker, holisticHelpers + enrichMarker);
+
+    if (!code.includes('const dragDropVisiblePassage = (q) => {')) {
+      if (!code.includes(enrichMarker)) {
+        throw new Error(`[Quality ${HOLISTIC_PATCH_VERSION}] enrichDragQuestionZoneContexts introuvable.`);
+      }
+      code = code.replace(enrichMarker, holisticHelpers + enrichMarker);
+    }
 
     const oldEnrichEnd = `    for (const zone of q.zones) {
       const original = Number(zone?.originalIndex);
@@ -160,7 +164,15 @@
     }
     return q;
   };`;
-    code = replaceOnce(code, "construction globale avant IA", oldEnrichEnd, newEnrichEnd);
+
+    if (!code.includes("PASSAGE COMPLET À RECONSTRUIRE AVANT DE RÉPONDRE:")) {
+      if (!code.includes(oldEnrichEnd)) {
+        throw new Error(`[Quality ${HOLISTIC_PATCH_VERSION}] Fin enrichissement drag-drop introuvable.`);
+      }
+      code = code.replace(oldEnrichEnd, newEnrichEnd);
+    } else {
+      console.log('[Global Exam Quality Wrapper] Construction du passage complet déjà présente; repatch ignoré.');
+    }
 
     const oldDragPromptStart = `        "Resous cet exercice de drag and drop.",
         "Associe exactement une réponse à chaque zone.",
@@ -171,7 +183,17 @@
         "Pour un fill-in-the-blanks, teste chaque mot dans le contexte de la phrase complète et compare les alternatives proches avant de figer le mapping.",
         "Associe exactement une réponse à chaque zone; une zone ne doit apparaître qu'une fois et un item ne doit pas être réutilisé.",
         "Utilise uniquement les index fournis.",`;
-    code = replaceOnce(code, "raisonnement global drag-drop", oldDragPromptStart, newDragPromptStart);
+
+    if (code.includes(oldDragPromptStart)) {
+      code = code.replace(oldDragPromptStart, newDragPromptStart);
+    } else if (
+      code.includes('Résous cet exercice de drag and drop EN ENTIER avant de produire le JSON.') ||
+      code.includes('MÉTHODE OBLIGATOIRE: ne résous jamais les trous un par un.')
+    ) {
+      console.log('[Global Exam Quality Wrapper] Prompt drag-drop global déjà renforcé; repatch ignoré.');
+    } else {
+      throw new Error(`[Quality ${HOLISTIC_PATCH_VERSION}] Prompt drag-drop compatible introuvable.`);
+    }
 
     const debugMarker = "  window.geUnblock = clearHardBlock;";
     if (code.includes(debugMarker)) {
@@ -188,7 +210,7 @@
       );
     }
 
-    console.log(`[Global Exam Quality Wrapper] ${HOLISTIC_PATCH_VERSION} appliqué : passage drag-drop construit globalement et garde passif compatible avec la qualité récente.`);
+    console.log(`[Global Exam Quality Wrapper] ${HOLISTIC_PATCH_VERSION} appliqué : wrapper tolérant, passage complet conservé, garde passif compatible.`);
     return code;
   };
 
