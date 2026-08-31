@@ -111,11 +111,22 @@
       state.activity.totalQuestions = null;
       state.activity.lastCurrent = null;
       state.activity.id = null;
-      if (previousRouteActivityId) log('Nouvelle activité détectée : rythme 30 min réinitialisé.');
+      if (previousRouteActivityId) log('Nouvelle activité détectée : rythme activité réinitialisé.');
     }
     const progress = parseProgressMarker();`;
 
     code = replaceOnce(code, "rythme lié à l'activité URL", oldPacingStart, newPacingStart);
+
+    // 2b) PAGE DE COURS / VOCABULAIRE : du texte qui ressemble à une question ne
+    // suffit pas à déclarer une question active. Sans contrôle de réponse fort,
+    // Valider ou Passer doit être présent. Un simple bouton Suivant correspond aux
+    // pages passives de cours et doit rester navigable automatiquement.
+    const oldQuestionLikely = `    const questionLikely = !visibleCorrection && (strongControls || (progressed && questionHint));`;
+    const newQuestionLikely = `    const questionLikely = !visibleCorrection && (
+      strongControls ||
+      (progressed && questionHint && (validateButtons.length > 0 || passButtons.length > 0))
+    );`;
+    code = replaceOnce(code, "page passive sans faux unknown-question", oldQuestionLikely, newQuestionLikely);
 
     // 3) MATCH/DRAG-DROP : conserver le mot-cible placé juste avant chaque zone.
     // Global Exam affiche souvent : "feature" -> [zone vide]. L'ancien zoneContext
