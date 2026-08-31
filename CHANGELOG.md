@@ -50,9 +50,14 @@
   - plusieurs balayages gauche → droite → gauche → droite sont effectués avant l’analyse afin de récupérer les fragments qui n’apparaissent qu’après plusieurs défilements ;
   - une vue identique doit rester stable plusieurs fois avant d’être considérée comme une extrémité du carrousel ;
   - recherche automatique d’un fragment dans les différentes vues avant chaque clic ;
-  - jusqu’à trois tentatives de clic avant de déclarer l’interaction impossible ;
-  - corrige le cas où l’IA ne recevait que 6 fragments alors qu’un 7e (`an email,` par exemple) n’apparaissait qu’après consommation des autres fragments.
-- Ajout de `geDebugOrderingGrammar()` et `geDebugOrderingCarousel()`.
+  - jusqu’à trois tentatives de clic avant de déclarer l’interaction impossible.
+- Nouvel inventaire dynamique `6.4-ordering-inventory-v1` :
+  - le nombre de fragments n’est plus supposé à 5, 6, 7 ou une autre valeur ;
+  - avant tout appel IA, le script consomme temporairement les fragments disponibles jusqu’à ce que la banque soit réellement vide ;
+  - les nouveaux fragments qui n’apparaissent qu’après consommation des précédents sont alors découverts et mémorisés ;
+  - l’ordering est ensuite remis à zéro et l’IA reçoit la liste complète confirmée ;
+  - si la banque ne peut pas être vidée ou si la remise à zéro n’est pas confirmée, aucune réponse IA n’est appliquée.
+- Ajout de `geDebugOrderingGrammar()`, `geDebugOrderingCarousel()` et `geDebugOrderingInventory()`.
 
 ### Finalisation et rythme
 
@@ -80,6 +85,7 @@ geDebugOrderingCandidates()
 geDebugOrderingCount()
 geDebugOrderingGrammar()
 geDebugOrderingCarousel()
+geDebugOrderingInventory()
 ```
 
 ### Fichiers runtime v6.4
@@ -95,6 +101,7 @@ base v6.3
 -> garde récursion page-audit
 -> runtime-finalize-v6.4
 -> runtime-quality-v6.4
+-> inventaire dynamique ordering
 -> garde faux ordering partiel
 -> lecture DOM complète
 -> garde grammatical ordering
