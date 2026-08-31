@@ -2,6 +2,7 @@
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
   const INVENTORY_STATE_PATCH_VERSION = "6.4-ordering-inventory-state-v1";
   const INVENTORY_DOM_PATCH_VERSION = "6.4-ordering-dom-inventory-v2";
+  const DRAG_DROP_EMPTY_ZONE_PATCH_VERSION = "6.4-dragdrop-empty-zone-v1";
 
   const xhr = new XMLHttpRequest();
   xhr.open("GET", `http://localhost:3000/runtime-quality-legacy-v6.4.js?v=${Date.now()}`, false);
@@ -29,7 +30,8 @@
     let code = legacyApply(source);
     if (
       code.includes(`const ORDERING_INVENTORY_STATE_VERSION = "${INVENTORY_STATE_PATCH_VERSION}"`) &&
-      code.includes(`const ORDERING_DOM_INVENTORY_VERSION = "${INVENTORY_DOM_PATCH_VERSION}"`)
+      code.includes(`const ORDERING_DOM_INVENTORY_VERSION = "${INVENTORY_DOM_PATCH_VERSION}"`) &&
+      code.includes(`const DRAG_DROP_EMPTY_ZONE_RUNTIME_VERSION = "${DRAG_DROP_EMPTY_ZONE_PATCH_VERSION}"`)
     ) return code;
 
     const discoverMarker = `  const discoverCompleteOrderingInventory = async (q) => {`;
@@ -312,12 +314,80 @@
   };`;
     code = replaceOnce(code, 'snapshot inventaire DOM complet', oldInventorySnapshot, newInventorySnapshot);
 
+    // v3 : textOf() retombe sur textContent quand innerText est vide. Sur certains
+    // trous Global Exam, cela expose un texte caché React/accessibilité et faisait
+    // croire que TOUS les trous visuellement vides étaient déjà remplis.
+    const oldZoneFill = `  const zoneDirectText = (el) => textOf(el).replace(/\\s+/g, ' ').trim();
+  const emptyZoneMarkers = ['drop here','drop','deposer ici','deposez ici','placer ici','place here','glisser ici','drag here'];
+  const isZoneFilled = (el) => {
+    const t = normLoose(zoneDirectText(el));
+    if (!t) return false;
+    if (emptyZoneMarkers.some((m) => t === normLoose(m))) return false;
+    return true;
+  };`;
+    const newZoneFill = `  const DRAG_DROP_EMPTY_ZONE_RUNTIME_VERSION = "${DRAG_DROP_EMPTY_ZONE_PATCH_VERSION}";
+  const zoneDirectText = (el) => {
+    if (!el?.isConnected) return '';
+    // innerText représente ce qui est réellement rendu. Ne jamais retomber ici sur
+    // textContent : un texte caché ne constitue pas une réponse visible.
+    return String(el.innerText || '').replace(/\\s+/g, ' ').trim();
+  };
+  const emptyZoneMarkers = ['drop here','drop','deposer ici','deposez ici','placer ici','place here','glisser ici','drag here'];
+  const isZoneFilled = (el) => {
+    if (!el?.isConnected || !isVisible(el)) return false;
+    const raw = zoneDirectText(el);
+    const t = normLoose(raw);
+    if (!t) return false;
+    if (emptyZoneMarkers.some((m) => t === normLoose(m))) return false;
+    if (/^(blank|empty|empty blank|answer|response|drop zone|dropzone|slot|target|zone)$/.test(t)) return false;
+    return true;
+  };`;
+    code = replaceOnce(code, 'lecture visuelle réelle des trous drag-drop', oldZoneFill, newZoneFill);
+
+    const oldCompletedFill = `    if (isFillWordsInstruction()) {
+      const zones = getLiveZoneElements(document.body);
+      if (zones.length) {
+        const filled = zones.filter(isZoneFilled);
+        if (filled.length === zones.length) {
+          return {
+            type: 'answered', answeredKind: 'drag-drop', root: findQuestionRoot(),
+            prompt: stableInstructionText(), key: \`answered::\${id}\`,
+            answerState: 'complete', detail: \`\${filled.length}/\${zones.length} zones remplies\`,
+          };
+        }
+      }
+    }`;
+    const newCompletedFill = `    if (isFillWordsInstruction()) {
+      const zones = getLiveZoneElements(document.body);
+      if (zones.length) {
+        const filled = zones.filter(isZoneFilled);
+        if (filled.length === zones.length) {
+          let remainingBank = [];
+          try { remainingBank = collectDragItems(document.body); } catch {}
+          if (remainingBank.length > 0) {
+            console.log(
+              '[Global Exam Drag] Faux état déjà répondu ignoré : ' +
+              remainingBank.length + ' mot(s) restent dans la banque alors que les zones semblaient remplies.'
+            );
+          } else {
+            return {
+              type: 'answered', answeredKind: 'drag-drop', root: findQuestionRoot(),
+              prompt: stableInstructionText(), key: \`answered::\${id}\`,
+              answerState: 'complete', detail: \`\${filled.length}/\${zones.length} zones remplies\`,
+            };
+          }
+        }
+      }
+    }`;
+    code = replaceOnce(code, 'garde banque restante avant état drag-drop répondu', oldCompletedFill, newCompletedFill);
+
     const debugMarker = "  window.geUnblock = clearHardBlock;";
     if (code.includes(debugMarker)) {
       code = code.replace(
         debugMarker,
         `  window.geOrderingInventoryStateVersion = () => ORDERING_INVENTORY_STATE_VERSION;\n` +
         `  window.geOrderingDomInventoryVersion = () => ORDERING_DOM_INVENTORY_VERSION;\n` +
+        `  window.geDragDropEmptyZoneFixVersion = () => DRAG_DROP_EMPTY_ZONE_RUNTIME_VERSION;\n` +
         `  window.geDebugOrderingInventoryState = () => state.agent.orderingInventoryState || null;\n` +
         `  window.geDebugOrderingDomCandidates = () => {\n` +
         `    const q = detectQuestion();\n` +
@@ -328,19 +398,34 @@
         `    console.table(items);\n` +
         `    return items;\n` +
         `  };\n` +
+        `  window.geDebugDragDropZones = () => {\n` +
+        `    const zones = getLiveZoneElements(document.body).map((el, index) => ({\n` +
+        `      index,\n` +
+        `      renderedText: String(el.innerText || '').replace(/\\s+/g, ' ').trim(),\n` +
+        `      rawTextContent: String(el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180),\n` +
+        `      filled: isZoneFilled(el),\n` +
+        `      width: Math.round(el.getBoundingClientRect().width),\n` +
+        `      height: Math.round(el.getBoundingClientRect().height)\n` +
+        `    }));\n` +
+        `    let bank = [];\n` +
+        `    try { bank = collectDragItems(document.body).map((item) => item.text); } catch {}\n` +
+        `    console.table(zones);\n` +
+        `    console.log('[Global Exam Drag] Banque restante:', bank);\n` +
+        `    return { zones, bank };\n` +
+        `  };\n` +
         debugMarker
       );
     }
 
     console.log(
-      `[Global Exam Quality] ${INVENTORY_STATE_PATCH_VERSION} + ${INVENTORY_DOM_PATCH_VERSION} appliqué : ` +
-      `le nombre total découvert est conservé et les fragments div/span cliquables sont inclus.`
+      `[Global Exam Quality] ${INVENTORY_STATE_PATCH_VERSION} + ${INVENTORY_DOM_PATCH_VERSION} + ` +
+      `${DRAG_DROP_EMPTY_ZONE_PATCH_VERSION} appliqué : inventaire ordering conservé et trous drag-drop lus visuellement.`
     );
     return code;
   };
 
   console.log(
     `[Global Exam Quality] ${QUALITY_PATCH_VERSION} + ${INVENTORY_STATE_PATCH_VERSION} + ` +
-    `${INVENTORY_DOM_PATCH_VERSION} prêt.`
+    `${INVENTORY_DOM_PATCH_VERSION} + ${DRAG_DROP_EMPTY_ZONE_PATCH_VERSION} prêt.`
   );
 })();
