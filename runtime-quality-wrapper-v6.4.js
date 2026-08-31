@@ -1,6 +1,6 @@
 (() => {
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
-  const HOLISTIC_PATCH_VERSION = "6.4-holistic-drag-passive-v3";
+  const HOLISTIC_PATCH_VERSION = "6.4-holistic-drag-passive-v4";
 
   const xhr = new XMLHttpRequest();
   xhr.open("GET", `http://localhost:3000/runtime-quality-base-v6.4.js?v=${Date.now()}`, false);
@@ -75,7 +75,7 @@
     }
 
     const enrichMarker = `  const enrichDragQuestionZoneContexts = (q) => {`;
-    const holisticHelpers = `  const HOLISTIC_DRAG_PASSIVE_VERSION = "${HOLISTIC_PATCH_VERSION}";
+    const holisticHelpers = String.raw`  const HOLISTIC_DRAG_PASSIVE_VERSION = "${HOLISTIC_PATCH_VERSION}";
 
   const dragDropCommonAncestor = (zones) => {
     const els = (zones || []).map((z) => z?.element).filter((el) => el?.isConnected);
@@ -145,7 +145,7 @@
     return q;
   };`;
 
-    const newEnrichEnd = `    for (const zone of q.zones) {
+    const newEnrichEnd = String.raw`    for (const zone of q.zones) {
       const original = Number(zone?.originalIndex);
       const local = Number(zone?.index);
       const zoneIndex = Number.isInteger(original) ? original : (Number.isInteger(local) ? local : 0);
@@ -210,7 +210,7 @@
       );
     }
 
-    console.log(`[Global Exam Quality Wrapper] ${HOLISTIC_PATCH_VERSION} appliqué : wrapper tolérant, passage complet conservé, garde passif compatible.`);
+    console.log(`[Global Exam Quality Wrapper] ${HOLISTIC_PATCH_VERSION} appliqué : échappements préservés via String.raw, passage complet et garde passif compatibles.`);
     return code;
   };
 
