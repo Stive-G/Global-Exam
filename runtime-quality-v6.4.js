@@ -142,7 +142,7 @@
     const finalResetEnd = `    if (!resetOk || Number(resetState.selection?.selectedCount || 0) > 0) {
       return {
         ok: false,
-        reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée après fallback renforcé',
+        reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée après fallback renforcé v2',
         discovered: q.items.map((x) => x.text)
       };
     }`;
