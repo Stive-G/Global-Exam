@@ -1,6 +1,6 @@
 (() => {
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
-  const HOLISTIC_PATCH_VERSION = "6.4-holistic-drag-passive-v1";
+  const HOLISTIC_PATCH_VERSION = "6.4-holistic-drag-passive-v2";
 
   const xhr = new XMLHttpRequest();
   xhr.open("GET", `http://localhost:3000/runtime-quality-base-v6.4.js?v=${Date.now()}`, false);
@@ -60,7 +60,21 @@
       strongControls ||
       (progressed && questionHint && (validateButtons.length > 0 || passButtons.length > 0))
     );`;
-    code = replaceOnce(code, "audit passif sans faux unknown-question", oldAuditBlock, newAuditBlock);
+
+    // Les versions récentes de runtime-quality appliquent déjà un garde passif plus
+    // strict (PASSIVE_PAGE_RUNTIME_VERSION). Ne jamais faire échouer tout le loader
+    // simplement parce que l'ancien bloc exact a déjà été remplacé en amont.
+    if (code.includes(oldAuditBlock)) {
+      code = replaceOnce(code, "audit passif sans faux unknown-question", oldAuditBlock, newAuditBlock);
+    } else if (
+      code.includes('const PASSIVE_PAGE_RUNTIME_VERSION = "6.4-passive-page-guard-v3"') ||
+      code.includes('const directResponseControls =') ||
+      code.includes('const buttonResponseEvidence =')
+    ) {
+      console.log('[Global Exam Quality Wrapper] Garde page passive déjà appliqué par la qualité de base; compatibilité v2 active.');
+    } else {
+      throw new Error(`[Quality ${HOLISTIC_PATCH_VERSION}] Aucun garde passif compatible détecté.`);
+    }
 
     const enrichMarker = `  const enrichDragQuestionZoneContexts = (q) => {`;
     const holisticHelpers = `  const HOLISTIC_DRAG_PASSIVE_VERSION = "${HOLISTIC_PATCH_VERSION}";
@@ -108,8 +122,8 @@
     };
 
     return readNode(root)
-      .replace(/\\s+/g, ' ')
-      .replace(/\\s+([,.;:!?])/g, '$1')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+([,.;:!?])/g, '$1')
       .trim()
       .slice(0, 6000);
   };
@@ -140,7 +154,7 @@
       q.fullPassage = fullPassage;
       const marker = 'PASSAGE COMPLET À RECONSTRUIRE AVANT DE RÉPONDRE:';
       if (!String(q.prompt || '').includes(marker)) {
-        q.prompt = String(q.prompt || '') + '\\n\\n' + marker + '\\n' + fullPassage;
+        q.prompt = String(q.prompt || '') + '\n\n' + marker + '\n' + fullPassage;
       }
       console.log('[Global Exam Drag] Passage complet construit avant IA:', fullPassage);
     }
@@ -174,7 +188,7 @@
       );
     }
 
-    console.log(`[Global Exam Quality Wrapper] ${HOLISTIC_PATCH_VERSION} appliqué : passage drag-drop construit globalement et faux unknown-question passifs filtrés.`);
+    console.log(`[Global Exam Quality Wrapper] ${HOLISTIC_PATCH_VERSION} appliqué : passage drag-drop construit globalement et garde passif compatible avec la qualité récente.`);
     return code;
   };
 
