@@ -128,6 +128,139 @@
     );`;
     code = replaceOnce(code, "page passive sans faux unknown-question", oldQuestionLikely, newQuestionLikely);
 
+    // 2c) ORDERING : Global Exam peut ne révéler de nouveaux fragments qu'après
+    // consommation des précédents. Le nombre total n'est donc jamais supposé.
+    // Avant l'IA, on vide temporairement la banque jusqu'à ce qu'elle soit réellement
+    // vide, on mémorise chaque fragment révélé, puis on remet l'ordering à zéro.
+    const analyzeMarker = "  const analyzeCurrentQuestion = async () => {\n";
+    const orderingInventoryHelpers = `  const ORDERING_INVENTORY_VERSION = "6.4-ordering-inventory-v1";
+
+  const orderingInventorySnapshot = (q) => {
+    const instruction = findOrderingInstructionElement(document.body);
+    const target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);
+    const selection = orderingSelectionState(document.body, instruction, target);
+    return { instruction, target, selection, remainingItems: selection?.remainingItems || [] };
+  };
+
+  const orderingInventoryMeaningful = (item) => {
+    const text = String(item?.text || '').replace(/\\s+/g, ' ').trim();
+    if (!text || /^\\d+$/.test(text) || isOrderingNoiseText(text)) return false;
+    return true;
+  };
+
+  const discoverCompleteOrderingInventory = async (q) => {
+    if (q?.type !== 'ordering') return { ok: true, count: q?.items?.length || 0, items: q?.items || [] };
+
+    let snap = orderingInventorySnapshot(q);
+    if (Number(snap.selection?.selectedCount || 0) > 0) {
+      log('Ordering: état partiel présent avant inventaire; remise à zéro avant lecture complète.');
+      if (!await resetOrderingSelection(q)) {
+        return { ok: false, reason: 'impossible de remettre à zéro l ordering avant inventaire complet' };
+      }
+      await wait(220);
+      snap = orderingInventorySnapshot(q);
+    }
+
+    const discovered = [];
+    let safety = 0;
+    let stagnant = 0;
+
+    console.log('[Global Exam Ordering] Inventaire dynamique: nombre total inconnu, découverte jusqu’à banque vide.');
+
+    while (safety < 32) {
+      safety += 1;
+      snap = orderingInventorySnapshot(q);
+      const remaining = (snap.remainingItems || []).filter(orderingInventoryMeaningful);
+      if (!remaining.length) break;
+
+      const candidate = remaining[0];
+      const text = String(candidate.text || '').replace(/\\s+/g, ' ').trim();
+      const beforeSelected = Number(snap.selection?.selectedCount || 0);
+      const beforeRemaining = Number(snap.selection?.remainingCount ?? remaining.length);
+
+      let ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt += 1) {
+        ok = await clickOrderingItemRobust(q, candidate);
+        if (!ok) await wait(220);
+      }
+      if (!ok) {
+        return { ok: false, reason: 'fragment impossible à consommer pendant inventaire: ' + text, discovered };
+      }
+
+      await wait(180);
+      const after = orderingInventorySnapshot(q);
+      const afterSelected = Number(after.selection?.selectedCount || 0);
+      const afterRemaining = Number(after.selection?.remainingCount ?? after.remainingItems.length);
+      const progressed = afterSelected > beforeSelected || afterRemaining < beforeRemaining ||
+        !(after.remainingItems || []).some((x) => norm(x?.text || '') === norm(text));
+
+      if (!progressed) {
+        stagnant += 1;
+        if (stagnant >= 2) {
+          return { ok: false, reason: 'inventaire ordering sans progression DOM sur: ' + text, discovered };
+        }
+      } else {
+        stagnant = 0;
+        discovered.push({ text });
+      }
+    }
+
+    snap = orderingInventorySnapshot(q);
+    const stillRemaining = (snap.remainingItems || []).filter(orderingInventoryMeaningful);
+    if (stillRemaining.length) {
+      return {
+        ok: false,
+        reason: 'banque ordering encore non vide après inventaire de sécurité',
+        discovered,
+        remaining: stillRemaining.map((x) => x.text)
+      };
+    }
+    if (!discovered.length) {
+      return { ok: false, reason: 'aucun fragment découvert pendant inventaire ordering' };
+    }
+
+    q.items = discovered.map((item, index) => ({ index, text: item.text, element: null }));
+    q.remainingCount = q.items.length;
+    q.totalCount = q.items.length;
+    q._orderingInventoryVerified = true;
+    q._orderingCarouselScanned = true;
+    q._orderingCarouselPages = Math.max(Number(q._orderingCarouselPages || 1), 1);
+    q.key = makeQuestionKey(q);
+
+    const resetOk = await resetOrderingSelection(q);
+    await wait(260);
+    const resetState = orderingInventorySnapshot(q);
+    if (!resetOk || Number(resetState.selection?.selectedCount || 0) > 0) {
+      return {
+        ok: false,
+        reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée',
+        discovered: q.items.map((x) => x.text)
+      };
+    }
+
+    console.log('[Global Exam Ordering] Inventaire complet confirmé:', q.items.length + ' fragment(s).', q.items.map((x) => x.text));
+    return { ok: true, count: q.items.length, items: q.items };
+  };
+
+`;
+    code = replaceOnce(code, "inventaire dynamique ordering", analyzeMarker, orderingInventoryHelpers + analyzeMarker);
+
+    const deterministicMarker = "    // Cas déterministe : un seul choix visible pour un seul trou.\n";
+    const orderingInventoryCall = `    if (q.type === 'ordering') {
+      const inventory = await discoverCompleteOrderingInventory(q);
+      if (!inventory.ok) {
+        const reason = 'Lecture ordering incomplète: ' + (inventory.reason || 'inventaire non confirmé');
+        hardBlock(q.key, reason);
+        state.agent.lastResult = { error: reason, questionKey: q.key, questionPrompt: q.prompt };
+        renderPanel(q);
+        return state.agent.lastResult;
+      }
+      agentLog('Ordering: ' + inventory.count + ' fragment(s) découverts avant tout appel IA.');
+    }
+
+`;
+    code = replaceOnce(code, "inventaire ordering avant IA", deterministicMarker, orderingInventoryCall + deterministicMarker);
+
     // 3) MATCH/DRAG-DROP : conserver le mot-cible placé juste avant chaque zone.
     // Global Exam affiche souvent : "feature" -> [zone vide]. L'ancien zoneContext
     // ne voyait que "Zone 1", ce qui rendait l'association définition -> mot impossible.
@@ -240,7 +373,6 @@
 
     // 4) DÉSACCORD IA : ne demander des votes supplémentaires que s'il existe
     // réellement des fournisseurs encore non utilisés après les slots 0/1/2.
-    const analyzeMarker = "  const analyzeCurrentQuestion = async () => {\n";
     const consensusHelpers = `  const rescuePersistentConsensus = async (q, seedCandidates = []) => {
     const pool = seedCandidates
       .map((c) => normalizeResultForQuestion(q, c))
@@ -444,6 +576,14 @@
       code = code.replace(
         debugMarker,
         `  window.geQualityPatchVersion = () => QUALITY_RUNTIME_VERSION;\n` +
+        `  window.geOrderingInventoryVersion = () => ORDERING_INVENTORY_VERSION;\n` +
+        `  window.geDebugOrderingInventory = async () => {\n` +
+        `    const q = detectQuestion();\n` +
+        `    const result = await discoverCompleteOrderingInventory(q);\n` +
+        `    console.log('[Global Exam Ordering Inventory]', result);\n` +
+        `    if (result?.items) console.table(result.items.map((x, index) => ({ index, text: x.text })));\n` +
+        `    return result;\n` +
+        `  };\n` +
         `  window.geDebugRelevantContext = () => {\n` +
         `    const q = detectQuestion();\n` +
         `    const snippets = selectRelevantActivityContext(q);\n` +
