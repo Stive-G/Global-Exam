@@ -1,6 +1,7 @@
 (() => {
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
   const INVENTORY_STATE_PATCH_VERSION = "6.4-ordering-inventory-state-v1";
+  const INVENTORY_DOM_PATCH_VERSION = "6.4-ordering-dom-inventory-v2";
 
   const xhr = new XMLHttpRequest();
   xhr.open("GET", `http://localhost:3000/runtime-quality-legacy-v6.4.js?v=${Date.now()}`, false);
@@ -26,7 +27,10 @@
 
   window.__applyGlobalExamV64QualityPatch = (source) => {
     let code = legacyApply(source);
-    if (code.includes(`const ORDERING_INVENTORY_STATE_VERSION = "${INVENTORY_STATE_PATCH_VERSION}"`)) return code;
+    if (
+      code.includes(`const ORDERING_INVENTORY_STATE_VERSION = "${INVENTORY_STATE_PATCH_VERSION}"`) &&
+      code.includes(`const ORDERING_DOM_INVENTORY_VERSION = "${INVENTORY_DOM_PATCH_VERSION}"`)
+    ) return code;
 
     const discoverMarker = `  const discoverCompleteOrderingInventory = async (q) => {`;
     const helpers = `  const ORDERING_INVENTORY_STATE_VERSION = "${INVENTORY_STATE_PATCH_VERSION}";
@@ -155,19 +159,188 @@
     clearHighlights();`;
     code = replaceOnce(code, 'restauration inventaire avant application', applyMarker, applyReplacement);
 
+    // v2 : certains fragments Global Exam sont de simples div/span cliquables.
+    // Le sélecteur historique ne voyait alors que le premier fragment. On ajoute
+    // un inventaire DOM géométrique, indépendant des classes React.
+    const resolveMarker = `  const resolveLiveOrderingItem = (q, originalText) => {`;
+    const domHelpers = `  const ORDERING_DOM_INVENTORY_VERSION = "${INVENTORY_DOM_PATCH_VERSION}";
+
+  const orderingTargetLooksLikeRealDropZone = (target) => {
+    if (!target?.isConnected || !isVisible(target) || isAssistantElement(target)) return false;
+    const r = target.getBoundingClientRect();
+    if (r.width < Math.min(220, innerWidth * 0.28) || r.height < 38 || r.height > 300) return false;
+    const style = getComputedStyle(target);
+    const borderStyles = [style.borderTopStyle, style.borderRightStyle, style.borderBottomStyle, style.borderLeftStyle, style.outlineStyle];
+    const dashed = borderStyles.some((value) => value === 'dashed' || value === 'dotted');
+    const borderWidth = [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth]
+      .map((value) => parseFloat(value) || 0)
+      .reduce((max, value) => Math.max(max, value), 0);
+    let explicit = false;
+    try { explicit = !!dropZoneSelector && target.matches(dropZoneSelector); } catch {}
+    const raw = String(textOf(target) || '').replace(/\\s+/g, ' ').trim();
+    return (explicit || dashed || borderWidth >= 2) && raw.length <= 260;
+  };
+
+  const orderingBroadInteractiveElement = (el) => {
+    if (!el?.isConnected || !isVisible(el) || !isEnabled(el) || isAssistantElement(el)) return false;
+    const raw = String(textOf(el) || '').replace(/\\s+/g, ' ').trim();
+    if (!raw || raw.length > 180 || isOrderingNoiseText(raw) || isExerciseUiNoiseText(raw)) return false;
+    const loose = normLoose(raw);
+    if (/^(transcript|transcription|feedback|fermer|close|dismiss|quitter)(\\b|$)/.test(loose)) return false;
+    const style = getComputedStyle(el);
+    const role = String(el.getAttribute?.('role') || '').toLowerCase();
+    const cls = String(el.className || '').toLowerCase();
+    return el.matches("button,[draggable='true'],[aria-grabbed],[data-rbd-draggable-id],[data-draggable='true']") ||
+      role === 'button' || role === 'option' || el.tabIndex >= 0 || style.cursor === 'pointer' ||
+      /word|chip|token|item|option|fragment|answer|response/.test(cls);
+  };
+
+  const collectOrderingBroadCandidates = (q, instructionEl = null, target = null) => {
+    const instruction = instructionEl?.isConnected
+      ? instructionEl
+      : (findOrderingInstructionElement(document.body) || null);
+    const instructionRect = instruction?.getBoundingClientRect?.() || null;
+    const liveTarget = target?.isConnected
+      ? target
+      : (orderingTargetLive(q) || findOrderingTarget(document.body, instruction));
+    const realTarget = orderingTargetLooksLikeRealDropZone(liveTarget) ? liveTarget : null;
+    const targetRect = realTarget?.getBoundingClientRect?.() || null;
+    const minTop = targetRect
+      ? targetRect.bottom - 28
+      : (instructionRect ? instructionRect.bottom + 2 : -Infinity);
+
+    const rawNodes = [...document.querySelectorAll(
+      "button,[role='button'],[role='option'],[draggable='true'],[aria-grabbed],[data-rbd-draggable-id],[data-draggable='true'],[tabindex],li,div,span"
+    )].filter(orderingBroadInteractiveElement);
+
+    const nodes = deepestUniqueElements(rawNodes).filter((el) => {
+      if (realTarget && (realTarget === el || realTarget.contains(el))) return false;
+      if (instruction && (instruction === el || instruction.contains(el) || el.contains(instruction))) return false;
+      const r = el.getBoundingClientRect();
+      if (r.top < minTop) return false;
+      if (r.width > Math.min(innerWidth * 0.82, 620) && r.height > 64) return false;
+      if (r.height > 120) return false;
+      return true;
+    });
+
+    nodes.sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return ar.top - br.top || ar.left - br.left || (ar.width * ar.height) - (br.width * br.height);
+    });
+
+    const seen = new Set();
+    const result = [];
+    for (const el of nodes) {
+      const text = String(textOf(el) || '').replace(/\\s+/g, ' ').trim();
+      const key = norm(text);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      result.push({ index: result.length, text, element: el });
+    }
+    return result;
+  };
+
+`;
+    code = replaceOnce(code, 'helpers inventaire DOM ordering', resolveMarker, domHelpers + resolveMarker);
+
+    const oldResolveOpen = `  const resolveLiveOrderingItem = (q, originalText) => {
+    const wanted = norm(originalText);
+    const root = q.root?.isConnected ? q.root : document.body;
+    const instructionEl = findOrderingInstructionElement(root) || findOrderingInstructionElement(document.body);
+    const target = q.orderTarget?.isConnected ? q.orderTarget : (findOrderingTarget(root, instructionEl) || findOrderingTarget(document.body, instructionEl));
+    const roots = root === document.body ? [root] : [root, document.body];`;
+    const newResolveOpen = `  const resolveLiveOrderingItem = (q, originalText) => {
+    const wanted = norm(originalText);
+    const root = q.root?.isConnected ? q.root : document.body;
+    const instructionEl = findOrderingInstructionElement(root) || findOrderingInstructionElement(document.body);
+    const target = q.orderTarget?.isConnected ? q.orderTarget : (findOrderingTarget(root, instructionEl) || findOrderingTarget(document.body, instructionEl));
+    const broadLive = collectOrderingBroadCandidates(q, instructionEl, target)
+      .find((item) => norm(item?.text || '') === wanted);
+    if (broadLive?.element?.isConnected) return broadLive.element;
+    const roots = root === document.body ? [root] : [root, document.body];`;
+    code = replaceOnce(code, 'résolution large des fragments ordering', oldResolveOpen, newResolveOpen);
+
+    const oldInventorySnapshot = `  const orderingInventorySnapshot = (q) => {
+    const instruction = findOrderingInstructionElement(document.body);
+    const target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);
+    const selection = orderingSelectionState(document.body, instruction, target);
+    return { instruction, target, selection, remainingItems: selection?.remainingItems || [] };
+  };`;
+    const newInventorySnapshot = `  const orderingInventorySnapshot = (q) => {
+    const instruction = findOrderingInstructionElement(document.body);
+    const target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);
+    const selection = orderingSelectionState(document.body, instruction, target);
+    const primary = Array.isArray(selection?.remainingItems) ? selection.remainingItems : [];
+    const broad = collectOrderingBroadCandidates(q, instruction, target);
+
+    const merged = [];
+    const seen = new Set();
+    const add = (item) => {
+      const text = String(item?.text || '').replace(/\\s+/g, ' ').trim();
+      const key = norm(text);
+      if (!key || seen.has(key) || isOrderingNoiseText(text)) return;
+      seen.add(key);
+      merged.push({ ...item, index: merged.length, text });
+    };
+    primary.forEach(add);
+    broad.forEach(add);
+
+    const mergedSelection = selection ? {
+      ...selection,
+      remainingItems: merged,
+      remainingCount: merged.length,
+      totalCount: Number(selection.selectedCount || 0) + merged.length,
+    } : {
+      target,
+      remainingItems: merged,
+      remainingCount: merged.length,
+      selectedCount: 0,
+      selectedTexts: [],
+      totalCount: merged.length,
+    };
+
+    if (broad.length > primary.length) {
+      console.log(
+        '[Global Exam Ordering] Couverture DOM étendue:',
+        primary.length + ' fragment(s) via sélecteurs historiques, ' +
+        broad.length + ' fragment(s) interactifs visibles.'
+      );
+    }
+
+    return { instruction, target, selection: mergedSelection, remainingItems: merged };
+  };`;
+    code = replaceOnce(code, 'snapshot inventaire DOM complet', oldInventorySnapshot, newInventorySnapshot);
+
     const debugMarker = "  window.geUnblock = clearHardBlock;";
     if (code.includes(debugMarker)) {
       code = code.replace(
         debugMarker,
         `  window.geOrderingInventoryStateVersion = () => ORDERING_INVENTORY_STATE_VERSION;\n` +
+        `  window.geOrderingDomInventoryVersion = () => ORDERING_DOM_INVENTORY_VERSION;\n` +
         `  window.geDebugOrderingInventoryState = () => state.agent.orderingInventoryState || null;\n` +
+        `  window.geDebugOrderingDomCandidates = () => {\n` +
+        `    const q = detectQuestion();\n` +
+        `    const instruction = findOrderingInstructionElement(document.body);\n` +
+        `    const target = orderingTargetLive(q) || findOrderingTarget(document.body, instruction);\n` +
+        `    const items = collectOrderingBroadCandidates(q, instruction, target).map((item, index) => ({ index, text: item.text }));\n` +
+        `    console.log('[Global Exam Ordering DOM]', items.length + ' fragment(s) visible(s).');\n` +
+        `    console.table(items);\n` +
+        `    return items;\n` +
+        `  };\n` +
         debugMarker
       );
     }
 
-    console.log(`[Global Exam Quality] ${INVENTORY_STATE_PATCH_VERSION} appliqué : le nombre total découvert est conservé jusqu'à l'application.`);
+    console.log(
+      `[Global Exam Quality] ${INVENTORY_STATE_PATCH_VERSION} + ${INVENTORY_DOM_PATCH_VERSION} appliqué : ` +
+      `le nombre total découvert est conservé et les fragments div/span cliquables sont inclus.`
+    );
     return code;
   };
 
-  console.log(`[Global Exam Quality] ${QUALITY_PATCH_VERSION} + ${INVENTORY_STATE_PATCH_VERSION} prêt.`);
+  console.log(
+    `[Global Exam Quality] ${QUALITY_PATCH_VERSION} + ${INVENTORY_STATE_PATCH_VERSION} + ` +
+    `${INVENTORY_DOM_PATCH_VERSION} prêt.`
+  );
 })();
