@@ -50,14 +50,12 @@
   - plusieurs balayages gauche → droite → gauche → droite sont effectués avant l’analyse afin de récupérer les fragments qui n’apparaissent qu’après plusieurs défilements ;
   - une vue identique doit rester stable plusieurs fois avant d’être considérée comme une extrémité du carrousel ;
   - recherche automatique d’un fragment dans les différentes vues avant chaque clic ;
-  - jusqu’à trois tentatives de clic avant de déclarer l’interaction impossible.
-- Nouvel inventaire dynamique `6.4-ordering-inventory-v1` :
-  - le nombre de fragments n’est plus supposé à 5, 6, 7 ou une autre valeur ;
-  - avant tout appel IA, le script consomme temporairement les fragments disponibles jusqu’à ce que la banque soit réellement vide ;
-  - les nouveaux fragments qui n’apparaissent qu’après consommation des précédents sont alors découverts et mémorisés ;
-  - l’ordering est ensuite remis à zéro et l’IA reçoit la liste complète confirmée ;
-  - si la banque ne peut pas être vidée ou si la remise à zéro n’est pas confirmée, aucune réponse IA n’est appliquée.
-- Ajout de `geDebugOrderingGrammar()`, `geDebugOrderingCarousel()` et `geDebugOrderingInventory()`.
+  - jusqu’à trois tentatives de clic avant de déclarer l’interaction impossible ;
+  - corrige le cas où l’IA ne recevait que 6 fragments alors qu’un 7e (`an email,` par exemple) n’apparaissait qu’après consommation des autres fragments.
+- Inventaire dynamique avant IA : le nombre total de fragments n’est jamais supposé. Le script consomme temporairement les fragments jusqu’à banque vide, mémorise tout ce qui est révélé, puis remet l’exercice à zéro avant analyse.
+- `6.4-ordering-inventory-state-v1` conserve cet inventaire complet entre l’analyse IA et l’application : si seulement 5 fragments sont visibles après reset alors que 7 ont été découverts, les 7 restent la référence et sont restaurés avant les clics. Le prompt IA est aussi réécrit avec le vrai total découvert.
+- Le reset initial d’un ordering déjà partiellement rempli utilise maintenant le fallback renforcé si le reset standard échoue.
+- Ajout de `geDebugOrderingGrammar()`, `geDebugOrderingCarousel()` et `geDebugOrderingInventoryState()`.
 
 ### Finalisation et rythme
 
@@ -85,7 +83,7 @@ geDebugOrderingCandidates()
 geDebugOrderingCount()
 geDebugOrderingGrammar()
 geDebugOrderingCarousel()
-geDebugOrderingInventory()
+geDebugOrderingInventoryState()
 ```
 
 ### Fichiers runtime v6.4
@@ -101,7 +99,6 @@ base v6.3
 -> garde récursion page-audit
 -> runtime-finalize-v6.4
 -> runtime-quality-v6.4
--> inventaire dynamique ordering
 -> garde faux ordering partiel
 -> lecture DOM complète
 -> garde grammatical ordering
