@@ -1,6 +1,6 @@
 (() => {
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
-  const INVENTORY_RESET_PATCH_VERSION = "6.4-ordering-inventory-reset-v1";
+  const INVENTORY_RESET_PATCH_VERSION = "6.4-ordering-inventory-reset-v2";
 
   const xhr = new XMLHttpRequest();
   xhr.open("GET", `http://localhost:3000/runtime-quality-core-v6.4.js?v=${Date.now()}`, false);
@@ -41,7 +41,7 @@
   const forceResetOrderingInventorySelection = async (q) => {
     const snapshot = () => orderingInventorySnapshot(q);
 
-    for (let step = 0; step < 48; step += 1) {
+    for (let step = 0; step < 64; step += 1) {
       let before = snapshot();
       if (Number(before.selection?.selectedCount || 0) <= 0) return true;
       const target = before.target;
@@ -49,28 +49,52 @@
 
       let changed = false;
       const selected = orderingSelectedElements(target);
+      const selectedTexts = [
+        ...(Array.isArray(before.selection?.selectedTexts) ? before.selection.selectedTexts : []),
+        ...(typeof orderingVisualSelectedTexts === 'function' ? orderingVisualSelectedTexts(target) : [])
+      ].map((x) => String(x || '').replace(/\\s+/g, ' ').trim()).filter(Boolean);
       const last = selected[selected.length - 1] || null;
-      const expectedText = String(last ? textOf(last) : '').replace(/\\s+/g, ' ').trim();
+      const expectedText = String(last ? textOf(last) : (selectedTexts[selectedTexts.length - 1] || '')).replace(/\\s+/g, ' ').trim();
       const candidates = [];
       const add = (el) => {
         if (!el?.isConnected || !isVisible(el) || !isEnabled(el) || isAssistantElement(el) || candidates.includes(el)) return;
         const r = el.getBoundingClientRect?.();
-        if (r && (r.width > Math.max(820, innerWidth * 0.92) || r.height > 280)) return;
+        if (!r || r.width <= 0 || r.height <= 0) return;
+        if (r.width > Math.max(820, innerWidth * 0.92) || r.height > 280) return;
         candidates.push(el);
       };
+      const addNodeAndActivators = (node, label) => {
+        if (!node?.isConnected) return;
+        add(node);
+        try { sourceVariants(node, label || textOf(node)).forEach(add); } catch {}
+        add(node.closest?.("button,[role='button'],[role='option'],[tabindex],li,[class*='word'],[class*='chip'],[class*='token'],[class*='item'],[class*='option'],[class*='answer'],[class*='response']"));
+        let cur = node.parentElement;
+        for (let depth = 0; cur && depth < 6 && target.contains(cur); depth += 1, cur = cur.parentElement) add(cur);
+        try { [...node.querySelectorAll("button,[role='button'],[role='option'],[tabindex]")].forEach(add); } catch {}
+      };
 
-      if (last) {
-        add(last);
-        try { sourceVariants(last, expectedText).forEach(add); } catch {}
-        add(last.closest?.("button,[role='button'],[role='option'],[tabindex],li,[class*='word'],[class*='chip'],[class*='token'],[class*='item'],[class*='option']"));
-        add(last.parentElement);
-        try { [...last.querySelectorAll("button,[role='button'],[tabindex]")].forEach(add); } catch {}
+      if (last) addNodeAndActivators(last, expectedText);
+
+      // Certains rendus Global Exam ne donnent aucun rôle interactif aux fragments déjà
+      // placés. On repart alors des textes réellement observés dans la cible et on cherche
+      // les plus petits nœuds DOM exacts, puis leurs wrappers React.
+      const semanticTexts = [...new Set(selectedTexts.map((x) => normLoose(x)).filter(Boolean))];
+      if (expectedText && !semanticTexts.includes(normLoose(expectedText))) semanticTexts.push(normLoose(expectedText));
+      const targetNodes = [...target.querySelectorAll('*')]
+        .filter((el) => el?.isConnected && isVisible(el) && !isAssistantElement(el))
+        .map((el) => ({ el, text: String(textOf(el) || '').replace(/\\s+/g, ' ').trim(), r: el.getBoundingClientRect() }))
+        .filter((x) => x.text && x.r.width > 0 && x.r.height > 0 && x.r.height <= 180)
+        .sort((a, b) => (a.r.width * a.r.height) - (b.r.width * b.r.height));
+
+      for (const wanted of semanticTexts.slice().reverse()) {
+        const exact = targetNodes.filter((x) => normLoose(x.text) === wanted).slice(0, 8);
+        for (const hit of exact) addNodeAndActivators(hit.el, hit.text);
       }
 
-      for (const candidate of candidates.slice(0, 10)) {
+      for (const candidate of candidates.slice(0, 24)) {
         before = snapshot();
         await clickElement(candidate);
-        await wait(220);
+        await wait(240);
         let after = snapshot();
         if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
 
@@ -89,13 +113,13 @@
           } catch {} finally {
             setTimeout(() => { state.agent.internalClick = false; }, 0);
           }
-          await wait(220);
+          await wait(240);
           after = snapshot();
           if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
         }
 
         if (await invokeReactClickDirect(candidate, expectedText || textOf(candidate))) {
-          await wait(220);
+          await wait(240);
           after = snapshot();
           if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
         }
@@ -120,17 +144,17 @@
             return small && nearby && (explicit || leftGlyph);
           });
 
-        for (const control of controls.slice(0, 8)) {
+        for (const control of controls.slice(0, 10)) {
           before = snapshot();
           await clickElement(control);
-          await wait(220);
+          await wait(240);
           const after = snapshot();
           if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
         }
       }
 
       if (!changed) {
-        const keyTargets = [last, target].filter(Boolean);
+        const keyTargets = [last, ...candidates.slice(0, 4), target].filter(Boolean);
         for (const keyTarget of keyTargets) {
           before = snapshot();
           try { keyTarget.focus?.({ preventScroll:true }); } catch { try { keyTarget.focus?.(); } catch {} }
@@ -139,7 +163,7 @@
               keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key, code:key, bubbles:true, cancelable:true }));
               keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key, code:key, bubbles:true, cancelable:true }));
             } catch {}
-            await wait(180);
+            await wait(190);
             const after = snapshot();
             if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
           }
@@ -148,7 +172,7 @@
       }
 
       if (!changed) {
-        console.warn('[Global Exam Ordering] Reset inventaire renforcé sans effet; arrêt pour éviter une navigation dangereuse.');
+        console.warn('[Global Exam Ordering] Reset inventaire renforcé v2 sans effet; aucun fragment placé n’a pu être retiré du DOM.');
         return false;
       }
     }
@@ -173,15 +197,15 @@
 
     const newReset = `    let resetOk = await resetOrderingSelection(q);
     if (!resetOk) {
-      console.log('[Global Exam Ordering] Reset standard insuffisant après inventaire; tentative renforcée.');
+      console.log('[Global Exam Ordering] Reset standard insuffisant après inventaire; tentative renforcée v2 sur les textes réellement placés.');
       resetOk = await forceResetOrderingInventorySelection(q);
     }
-    await wait(260);
+    await wait(300);
     const resetState = orderingInventorySnapshot(q);
     if (!resetOk || Number(resetState.selection?.selectedCount || 0) > 0) {
       return {
         ok: false,
-        reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée après fallback renforcé',
+        reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée après fallback renforcé v2',
         discovered: q.items.map((x) => x.text)
       };
     }`;
@@ -201,7 +225,7 @@
       );
     }
 
-    console.log(`[Global Exam Quality] ${INVENTORY_RESET_PATCH_VERSION} appliqué : reset robuste après inventaire dynamique.`);
+    console.log(`[Global Exam Quality] ${INVENTORY_RESET_PATCH_VERSION} appliqué : reset robuste via textes placés après inventaire dynamique.`);
     return code;
   };
 
