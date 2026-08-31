@@ -9,6 +9,7 @@
 - Lecture DOM complète obligatoire avant chaque appel IA.
 - Envoi explicite de `page_dom_reading` avec consigne, texte visible, choix, items, zones et champs.
 - Blocage si une question probable est incomplètement lue ou non reconnue.
+- Les pages passives de cours/vocabulaire avec uniquement `Suivant` ne sont plus classées `unknown-question` simplement parce que leur texte contient des formulations comme `what`, `which`, `select`, etc. Sans contrôle de réponse fort, un indice textuel n’est considéré comme question que si `Valider` ou `Passer` est présent.
 - Reconnaissance renforcée des pages de correction/résultat (`Bravo`, `Presque`, `Pas d’inquiétude`, onglets Correction/Explication).
 - `Passer` ne peut plus être utilisé comme soumission implicite.
 
