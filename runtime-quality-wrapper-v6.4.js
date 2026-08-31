@@ -30,10 +30,6 @@
     let code = baseApply(source);
     if (code.includes(`const HOLISTIC_DRAG_PASSIVE_VERSION = "${HOLISTIC_PATCH_VERSION}"`)) return code;
 
-    // 1) Pages de cours/vocabulaire : des boutons décoratifs, transcript ou audio ne
-    // doivent jamais suffire à transformer une page passive en unknown-question.
-    // Les boutons-réponses seuls ne sont considérés forts que si Valider/Passer est
-    // présent. Les vrais radios/champs/zones/orderings restent, eux, des signaux forts.
     const oldAuditBlock = `    const strongControls =
       radios.length >= 2 || checkboxes.length >= 2 ||
       roleRadios.length >= 2 || roleCheckboxes.length >= 2 ||
@@ -60,18 +56,12 @@
       !semanticStrongControls &&
       validateButtons.length === 0 && passButtons.length === 0;
 
-    // Une page qui ne possède aucun vrai contrôle de réponse reste passive même si
-    // son texte contient des mots comme question/answer ou si plusieurs boutons UI
-    // sont présents. C'est le cas des fiches vocabulaire + transcript + Suivant.
     const questionLikely = !visibleCorrection && !passiveContentOnly && (
       strongControls ||
       (progressed && questionHint && (validateButtons.length > 0 || passButtons.length > 0))
     );`;
     code = replaceOnce(code, "audit passif sans faux unknown-question", oldAuditBlock, newAuditBlock);
 
-    // 2) Fill-in-the-blanks drag/drop : construire une représentation du passage
-    // ENTIER avec tous les trous avant le premier appel IA. Résoudre trou par trou
-    // peut produire des inversions plausibles localement (requirements/processes).
     const enrichMarker = `  const enrichDragQuestionZoneContexts = (q) => {`;
     const holisticHelpers = `  const HOLISTIC_DRAG_PASSIVE_VERSION = "${HOLISTIC_PATCH_VERSION}";
 
@@ -117,26 +107,11 @@
       return out;
     };
 
-    let passage = readNode(root)
+    return readNode(root)
       .replace(/\\s+/g, ' ')
       .replace(/\\s+([,.;:!?])/g, '$1')
-      .trim();
-
-    // Si l'ancêtre commun est trop large et inclut la banque, retirer seulement une
-    // occurrence terminale de chaque item quand elle apparaît après le dernier trou.
-    const lastZonePos = passage.lastIndexOf('[[ZONE_');
-    if (lastZonePos >= 0) {
-      const head = passage.slice(0, lastZonePos + 80);
-      let tail = passage.slice(lastZonePos + 80);
-      for (const item of q.items || []) {
-        const raw = String(item?.text || '').trim();
-        if (!raw) continue;
-        const escaped = raw.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\$&');
-        tail = tail.replace(new RegExp('(?:^|\\s)' + escaped + '(?=\\s|$)', 'i'), ' ');
-      }
-      passage = (head + tail).replace(/\\s+/g, ' ').trim();
-    }
-    return passage.slice(0, 6000);
+      .trim()
+      .slice(0, 6000);
   };
 
 `;
