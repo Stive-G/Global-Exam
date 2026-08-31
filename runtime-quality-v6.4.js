@@ -1,209 +1,173 @@
 (() => {
   const QUALITY_PATCH_VERSION = "6.4-quality-v1";
-  const INVENTORY_RESET_PATCH_VERSION = "6.4-ordering-inventory-reset-v1";
+  const INVENTORY_STATE_PATCH_VERSION = "6.4-ordering-inventory-state-v1";
 
   const xhr = new XMLHttpRequest();
-  xhr.open("GET", `http://localhost:3000/runtime-quality-core-v6.4.js?v=${Date.now()}`, false);
+  xhr.open("GET", `http://localhost:3000/runtime-quality-legacy-v6.4.js?v=${Date.now()}`, false);
   try {
     xhr.send(null);
   } catch (error) {
-    throw new Error(`[Global Exam Quality] Impossible de charger le core qualité: ${error?.message || error}`);
+    throw new Error(`[Global Exam Quality] Impossible de charger le patch qualité existant: ${error?.message || error}`);
   }
   if (xhr.status < 200 || xhr.status >= 300 || !xhr.responseText) {
-    throw new Error(`[Global Exam Quality] Core qualité HTTP ${xhr.status || 0}.`);
+    throw new Error(`[Global Exam Quality] Patch qualité existant HTTP ${xhr.status || 0}.`);
   }
 
   (0, eval)(xhr.responseText);
-  const coreApply = window.__applyGlobalExamV64QualityPatch;
-  if (typeof coreApply !== "function") {
-    throw new Error("[Global Exam Quality] Core qualité chargé mais patch principal absent.");
+  const legacyApply = window.__applyGlobalExamV64QualityPatch;
+  if (typeof legacyApply !== "function") {
+    throw new Error("[Global Exam Quality] Patch qualité existant chargé mais fonction principale absente.");
   }
 
-  window.__applyGlobalExamV64QualityPatch = (source) => {
-    let code = coreApply(source);
-    if (code.includes(`const ORDERING_INVENTORY_RESET_VERSION = "${INVENTORY_RESET_PATCH_VERSION}"`)) return code;
-
-    const discoverMarker = `  const discoverCompleteOrderingInventory = async (q) => {`;
-    if (!code.includes(discoverMarker)) {
-      throw new Error(`[Quality ${INVENTORY_RESET_PATCH_VERSION}] discoverCompleteOrderingInventory introuvable.`);
-    }
-
-    const helpers = `  const ORDERING_INVENTORY_RESET_VERSION = "${INVENTORY_RESET_PATCH_VERSION}";
-
-  const orderingInventoryResetChanged = (before, after) => {
-    const bSelected = Number(before?.selection?.selectedCount || 0);
-    const aSelected = Number(after?.selection?.selectedCount || 0);
-    const bRemaining = Number(before?.selection?.remainingCount || 0);
-    const aRemaining = Number(after?.selection?.remainingCount || 0);
-    return aSelected < bSelected || aRemaining > bRemaining;
+  const replaceOnce = (source, label, before, after) => {
+    if (!source.includes(before)) throw new Error(`[Quality ${INVENTORY_STATE_PATCH_VERSION}] Bloc introuvable: ${label}.`);
+    return source.replace(before, after);
   };
 
-  const forceResetOrderingInventorySelection = async (q) => {
-    const snapshot = () => orderingInventorySnapshot(q);
+  window.__applyGlobalExamV64QualityPatch = (source) => {
+    let code = legacyApply(source);
+    if (code.includes(`const ORDERING_INVENTORY_STATE_VERSION = "${INVENTORY_STATE_PATCH_VERSION}"`)) return code;
 
-    for (let step = 0; step < 48; step += 1) {
-      let before = snapshot();
-      if (Number(before.selection?.selectedCount || 0) <= 0) return true;
-      const target = before.target;
-      if (!target?.isConnected) return false;
+    const discoverMarker = `  const discoverCompleteOrderingInventory = async (q) => {`;
+    const helpers = `  const ORDERING_INVENTORY_STATE_VERSION = "${INVENTORY_STATE_PATCH_VERSION}";
 
-      let changed = false;
-      const selected = orderingSelectedElements(target);
-      const last = selected[selected.length - 1] || null;
-      const expectedText = String(last ? textOf(last) : '').replace(/\\s+/g, ' ').trim();
-      const candidates = [];
-      const add = (el) => {
-        if (!el?.isConnected || !isVisible(el) || !isEnabled(el) || isAssistantElement(el) || candidates.includes(el)) return;
-        const r = el.getBoundingClientRect?.();
-        if (r && (r.width > Math.max(820, innerWidth * 0.92) || r.height > 280)) return;
-        candidates.push(el);
-      };
+  const orderingInventoryStateKey = () => [
+    String(location.pathname || ''),
+    String(typeof currentProgressMarker === 'function' ? (currentProgressMarker() || '') : '')
+  ].join('::');
 
-      if (last) {
-        add(last);
-        try { sourceVariants(last, expectedText).forEach(add); } catch {}
-        add(last.closest?.("button,[role='button'],[role='option'],[tabindex],li,[class*='word'],[class*='chip'],[class*='token'],[class*='item'],[class*='option']"));
-        add(last.parentElement);
-        try { [...last.querySelectorAll("button,[role='button'],[tabindex]")].forEach(add); } catch {}
-      }
+  const rewriteOrderingPromptFromInventory = (q) => {
+    if (!q || q.type !== 'ordering' || !Array.isArray(q.items) || !q.items.length) return q;
+    const count = q.items.length;
+    let prompt = String(q.prompt || '');
+    prompt = prompt
+      .replace(/Nombre de fragments RESTANTS à sélectionner maintenant:\\s*\\d+\\./gi, 'Nombre total de fragments confirmé par inventaire: ' + count + '.')
+      .replace(/Tu dois retourner une permutation contenant exactement\\s+\\d+\\s+index, chacun une seule fois, parmi\\s+0\\.\\.\\d+\\./gi,
+        'Tu dois retourner une permutation contenant exactement ' + count + ' index, chacun une seule fois, parmi 0..' + (count - 1) + '.')
+      .replace(/Il n'y a AUCUN nombre fixe de fragments:\\s*utilise seulement les\\s+\\d+\\s+propositions actuellement disponibles\\./gi,
+        'Le nombre a été découvert dynamiquement: utilise exactement les ' + count + ' fragments de l inventaire complet.');
+    q.prompt = prompt;
+    q.requiredCount = count;
+    q.remainingCount = count;
+    q.totalCount = count;
+    return q;
+  };
 
-      for (const candidate of candidates.slice(0, 10)) {
-        before = snapshot();
-        await clickElement(candidate);
-        await wait(220);
-        let after = snapshot();
-        if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
+  const rememberOrderingInventoryState = (q) => {
+    if (!q || q.type !== 'ordering' || !Array.isArray(q.items) || q.items.length < 2) return false;
+    rewriteOrderingPromptFromInventory(q);
+    state.agent.orderingInventoryState = {
+      key: orderingInventoryStateKey(),
+      count: q.items.length,
+      prompt: String(q.prompt || ''),
+      items: q.items.map((item, index) => ({ index, text: String(item.text || '').replace(/\\s+/g, ' ').trim() })),
+      savedAt: Date.now(),
+    };
+    return true;
+  };
 
-        const fresh = candidate?.isConnected ? candidate : null;
-        if (fresh) {
-          const r = fresh.getBoundingClientRect();
-          const x = r.left + r.width / 2, y = r.top + r.height / 2;
-          try {
-            state.agent.internalClick = true;
-            dispatchPointer(fresh, 'pointerdown', x, y, 1);
-            dispatchMouse(fresh, 'mousedown', x, y, 1);
-            await wait(55);
-            dispatchPointer(fresh, 'pointerup', x, y, 0);
-            dispatchMouse(fresh, 'mouseup', x, y, 0);
-            fresh.dispatchEvent(new MouseEvent('click', { bubbles:true, cancelable:true, composed:true, view:window, clientX:x, clientY:y, button:0, buttons:0 }));
-          } catch {} finally {
-            setTimeout(() => { state.agent.internalClick = false; }, 0);
-          }
-          await wait(220);
-          after = snapshot();
-          if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
-        }
-
-        if (await invokeReactClickDirect(candidate, expectedText || textOf(candidate))) {
-          await wait(220);
-          after = snapshot();
-          if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
-        }
-      }
-
-      if (!changed) {
-        const root = q?.root?.isConnected ? q.root : document.body;
-        const tr = target.getBoundingClientRect();
-        const controls = [...root.querySelectorAll("button,[role='button'],[aria-label],[title],[tabindex]")]
-          .filter((el) => el?.isConnected && isVisible(el) && isEnabled(el) && !isAssistantElement(el))
-          .filter((el) => {
-            const raw = String(controlText(el) || '').trim();
-            const label = normLoose([raw, el.getAttribute?.('aria-label') || '', el.getAttribute?.('title') || ''].join(' '));
-            if (matchesActionText(raw, state.config.validateTexts) || matchesActionText(raw, state.config.nextTexts) || matchesActionText(raw, state.config.passTexts)) return false;
-            const r = el.getBoundingClientRect();
-            const small = r.width >= 12 && r.width <= 96 && r.height >= 12 && r.height <= 84;
-            const dx = Math.max(tr.left-r.right, r.left-tr.right, 0);
-            const dy = Math.max(tr.top-r.bottom, r.top-tr.bottom, 0);
-            const nearby = Math.hypot(dx,dy) <= 420;
-            const explicit = /undo|remove|reset|back|retour|annul|precedent|previous|revenir/.test(label);
-            const leftGlyph = /^[←‹«<]+$/.test(raw);
-            return small && nearby && (explicit || leftGlyph);
-          });
-
-        for (const control of controls.slice(0, 8)) {
-          before = snapshot();
-          await clickElement(control);
-          await wait(220);
-          const after = snapshot();
-          if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
-        }
-      }
-
-      if (!changed) {
-        const keyTargets = [last, target].filter(Boolean);
-        for (const keyTarget of keyTargets) {
-          before = snapshot();
-          try { keyTarget.focus?.({ preventScroll:true }); } catch { try { keyTarget.focus?.(); } catch {} }
-          for (const key of ['Backspace','Delete']) {
-            try {
-              keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key, code:key, bubbles:true, cancelable:true }));
-              keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key, code:key, bubbles:true, cancelable:true }));
-            } catch {}
-            await wait(180);
-            const after = snapshot();
-            if (orderingInventoryResetChanged(before, after)) { changed = true; break; }
-          }
-          if (changed) break;
-        }
-      }
-
-      if (!changed) {
-        console.warn('[Global Exam Ordering] Reset inventaire renforcé sans effet; arrêt pour éviter une navigation dangereuse.');
-        return false;
-      }
+  const restoreOrderingInventoryState = (q, result = null) => {
+    if (!q || q.type !== 'ordering') return false;
+    const cached = state.agent.orderingInventoryState;
+    if (!cached || cached.key !== orderingInventoryStateKey() || !Array.isArray(cached.items) || cached.items.length < 2) return false;
+    const currentCount = Array.isArray(q.items) ? q.items.length : 0;
+    const resultCount = Array.isArray(result?.order) ? result.order.length : 0;
+    if (currentCount > cached.count) return false;
+    if (currentCount === cached.count && resultCount !== cached.count) {
+      rewriteOrderingPromptFromInventory(q);
+      return false;
     }
 
-    return Number(snapshot().selection?.selectedCount || 0) <= 0;
+    if (currentCount !== cached.count) {
+      q.items = cached.items.map((item, index) => ({ index, text: item.text, element: null }));
+      q._orderingInventoryVerified = true;
+      q._orderingCarouselScanned = true;
+      q.prompt = cached.prompt || q.prompt;
+      rewriteOrderingPromptFromInventory(q);
+      q.key = makeQuestionKey(q);
+      log('Ordering: inventaire complet restauré avant application (' + cached.count + ' fragments; ' + currentCount + ' visibles à cet instant).');
+    } else {
+      rewriteOrderingPromptFromInventory(q);
+    }
+    return true;
   };
 
 `;
+    code = replaceOnce(code, 'helpers état inventaire', discoverMarker, helpers + discoverMarker);
 
-    code = code.replace(discoverMarker, helpers + discoverMarker);
-
-    const oldReset = `    const resetOk = await resetOrderingSelection(q);
-    await wait(260);
-    const resetState = orderingInventorySnapshot(q);
-    if (!resetOk || Number(resetState.selection?.selectedCount || 0) > 0) {
-      return {
-        ok: false,
-        reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée',
-        discovered: q.items.map((x) => x.text)
-      };
+    const oldInitialReset = `    if (Number(snap.selection?.selectedCount || 0) > 0) {
+      log('Ordering: état partiel présent avant inventaire; remise à zéro avant lecture complète.');
+      if (!await resetOrderingSelection(q)) {
+        return { ok: false, reason: 'impossible de remettre à zéro l ordering avant inventaire complet' };
+      }
+      await wait(220);
+      snap = orderingInventorySnapshot(q);
     }`;
+    const newInitialReset = `    if (Number(snap.selection?.selectedCount || 0) > 0) {
+      log('Ordering: état partiel présent avant inventaire; remise à zéro avant lecture complète.');
+      let preResetOk = await resetOrderingSelection(q);
+      if (!preResetOk && typeof forceResetOrderingInventorySelection === 'function') {
+        console.log('[Global Exam Ordering] Reset initial standard insuffisant; tentative renforcée avant inventaire.');
+        preResetOk = await forceResetOrderingInventorySelection(q);
+      }
+      if (!preResetOk) {
+        return { ok: false, reason: 'impossible de remettre à zéro l ordering avant inventaire complet, fallback renforcé inclus' };
+      }
+      await wait(260);
+      snap = orderingInventorySnapshot(q);
+      if (Number(snap.selection?.selectedCount || 0) > 0) {
+        return { ok: false, reason: 'reset initial annoncé réussi mais fragments encore placés' };
+      }
+    }`;
+    code = replaceOnce(code, 'reset initial inventaire', oldInitialReset, newInitialReset);
 
-    const newReset = `    let resetOk = await resetOrderingSelection(q);
-    if (!resetOk) {
-      console.log('[Global Exam Ordering] Reset standard insuffisant après inventaire; tentative renforcée.');
-      resetOk = await forceResetOrderingInventorySelection(q);
-    }
-    await wait(260);
-    const resetState = orderingInventorySnapshot(q);
-    if (!resetOk || Number(resetState.selection?.selectedCount || 0) > 0) {
+    const oldInventoryShape = `    q.items = discovered.map((item, index) => ({ index, text: item.text, element: null }));
+    q.remainingCount = q.items.length;
+    q.totalCount = q.items.length;
+    q._orderingInventoryVerified = true;
+    q._orderingCarouselScanned = true;
+    q._orderingCarouselPages = Math.max(Number(q._orderingCarouselPages || 1), 1);
+    q.key = makeQuestionKey(q);`;
+    const newInventoryShape = `    q.items = discovered.map((item, index) => ({ index, text: item.text, element: null }));
+    q.remainingCount = q.items.length;
+    q.requiredCount = q.items.length;
+    q.totalCount = q.items.length;
+    q._orderingInventoryVerified = true;
+    q._orderingCarouselScanned = true;
+    q._orderingCarouselPages = Math.max(Number(q._orderingCarouselPages || 1), 1);
+    rewriteOrderingPromptFromInventory(q);
+    q.key = makeQuestionKey(q);`;
+    code = replaceOnce(code, 'comptage inventaire complet', oldInventoryShape, newInventoryShape);
+
+    const finalResetEnd = `    if (!resetOk || Number(resetState.selection?.selectedCount || 0) > 0) {
       return {
         ok: false,
         reason: 'inventaire complet trouvé (' + q.items.length + ') mais remise à zéro non confirmée après fallback renforcé',
         discovered: q.items.map((x) => x.text)
       };
     }`;
+    code = replaceOnce(code, 'mémorisation inventaire après reset', finalResetEnd, finalResetEnd + `\n    rememberOrderingInventoryState(q);`);
 
-    if (!code.includes(oldReset)) {
-      throw new Error(`[Quality ${INVENTORY_RESET_PATCH_VERSION}] bloc reset inventaire introuvable.`);
-    }
-    code = code.replace(oldReset, newReset);
+    const applyMarker = `  const applyResult = async (q, result) => {
+    clearHighlights();`;
+    const applyReplacement = `  const applyResult = async (q, result) => {
+    if (q?.type === 'ordering') restoreOrderingInventoryState(q, result);
+    clearHighlights();`;
+    code = replaceOnce(code, 'restauration inventaire avant application', applyMarker, applyReplacement);
 
     const debugMarker = "  window.geUnblock = clearHardBlock;";
     if (code.includes(debugMarker)) {
       code = code.replace(
         debugMarker,
-        `  window.geOrderingInventoryResetVersion = () => ORDERING_INVENTORY_RESET_VERSION;\n` +
-        `  window.geForceResetOrderingInventory = async () => { const q = detectQuestion(); return await forceResetOrderingInventorySelection(q); };\n` +
+        `  window.geOrderingInventoryStateVersion = () => ORDERING_INVENTORY_STATE_VERSION;\n` +
+        `  window.geDebugOrderingInventoryState = () => state.agent.orderingInventoryState || null;\n` +
         debugMarker
       );
     }
 
-    console.log(`[Global Exam Quality] ${INVENTORY_RESET_PATCH_VERSION} appliqué : reset robuste après inventaire dynamique.`);
+    console.log(`[Global Exam Quality] ${INVENTORY_STATE_PATCH_VERSION} appliqué : le nombre total découvert est conservé jusqu'à l'application.`);
     return code;
   };
 
-  console.log(`[Global Exam Quality] ${QUALITY_PATCH_VERSION} + ${INVENTORY_RESET_PATCH_VERSION} prêt.`);
+  console.log(`[Global Exam Quality] ${QUALITY_PATCH_VERSION} + ${INVENTORY_STATE_PATCH_VERSION} prêt.`);
 })();
